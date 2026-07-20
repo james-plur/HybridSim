@@ -4,6 +4,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace hybridsim;
@@ -80,6 +81,28 @@ void test_async_handler() {
   std::cout << "PASS: async_handler\n";
 }
 
+void test_send_at() {
+  simcpp20::simulation<> sim;
+  std::vector<std::pair<double, int>> events;
+
+  actor a(sim);
+  a.on<IncrementMsg>([&](actor &, IncrementMsg &msg) {
+    events.emplace_back(a.sim().now(), msg.delta);
+  });
+  a.start();
+  a.send_at(5.0, IncrementMsg{2});
+  a.send_at(2.0, IncrementMsg{1});
+  a.send_at(0.0, IncrementMsg{0});
+  sim.run();
+
+  assert(events.size() == 3);
+  assert(events[0] == std::make_pair(0.0, 0));
+  assert(events[1] == std::make_pair(2.0, 1));
+  assert(events[2] == std::make_pair(5.0, 2));
+  assert(sim.now() == 5.0);
+  std::cout << "PASS: send_at\n";
+}
+
 void test_multi_type_dispatch() {
   simcpp20::simulation<> sim;
   int counter = 0;
@@ -152,6 +175,7 @@ void test_ping_pong() {
 int main() {
   test_sync_handler();
   test_async_handler();
+  test_send_at();
   test_multi_type_dispatch();
   test_unknown_message_throws();
   test_mailbox_ordering();

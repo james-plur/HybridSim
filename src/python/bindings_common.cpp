@@ -64,6 +64,24 @@ void actor_send_type(PythonActor &self, const MessageType &msg_type,
   self.actor->send(make_dynamic_message(msg_type.id, std::any(obj)));
 }
 
+void actor_send_at_object(PythonActor &self, double when, py::object obj) {
+  const std::size_t type_id = registry().type_id_for(obj);
+  if (!py::hasattr(obj, "_hybridsim_type_id")) {
+    obj.attr("_hybridsim_type_id") = py::int_(type_id);
+    obj.attr("_hybridsim_type_name") =
+        py::str(message_registry::instance().name(type_id));
+  }
+  self.actor->send_at(when,
+                      make_dynamic_message(type_id, std::any(py::object(obj))));
+}
+
+void actor_send_at_type(PythonActor &self, double when,
+                        const MessageType &msg_type, py::kwargs kwargs) {
+  py::object obj = make_message_object(msg_type, kwargs);
+  self.actor->send_at(when,
+                      make_dynamic_message(msg_type.id, std::any(obj)));
+}
+
 void check_actor_errors(const PythonActor &self) {
   if (self.actor->has_error()) {
     self.actor->rethrow_if_error();

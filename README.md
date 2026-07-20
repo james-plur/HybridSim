@@ -64,6 +64,52 @@ export PYTHONPATH=/path/to/hybridsim/build
 python3 examples/actor_python_demo.py
 ```
 
+## Scheduler + Frontier
+
+MONOLITHIC / PDD 调度集成通过 [Frontier](https://github.com/NetX-lab/Frontier) 提供 batching 与 predictor 逻辑；hybridsim 通过 Actor 桥接层（`src/python/hybridsim_scheduler/`）驱动仿真时钟。
+
+### 安装 Frontier
+
+```bash
+pip install /path/to/Frontier --no-build-isolation
+```
+
+Frontier 包名为 `frontier-simulator`（见 Frontier 仓库的 `pyproject.toml`），会安装 `fasteners`、`scikit-learn` 等依赖。
+
+### 运行调度测试与示例
+
+```bash
+cmake -B build -DHYBRIDSIM_BUILD_EXAMPLES=OFF
+cmake --build build
+
+export PYTHONPATH=/path/to/Frontier:/path/to/hybridsim/build:/path/to/hybridsim/src/python
+python3 tests/test_scheduler_monolithic.py
+python3 examples/scheduler_monolithic_demo.py
+```
+
+### 复现 Frontier architecture 示例并对比 Chrome profile
+
+对 `Frontier/examples/architecture` 下 20 个 co-location + PDD 用例，分别运行 Frontier 原生仿真与 hybridsim 复现，并生成 `chrome://tracing` 可读的 `inference_profile.json`：
+
+```bash
+export PYTHONPATH=/path/to/Frontier:/path/to/hybridsim/build:/path/to/hybridsim/src/python
+python3 examples/run_architecture_matrix.py
+```
+
+产物目录：`outputs/architecture_compare/`
+
+- `frontier/<case>/.../inference_profile.json` — Frontier 调度时间线
+- `hybridsim/<case>/.../inference_profile.json` — hybridsim 调度时间线
+- `comparisons/<case>.json` — batch 级调度窗口对比结果
+
+可用 `--case-filter dense` 或 `--arch pdd` 过滤子集。
+
+也可安装 hybridsim 调度包（可选依赖声明 Frontier）：
+
+```bash
+pip install -e ".[scheduler]" /path/to/hybridsim
+```
+
 ## 网络问题
 
 若 `git clone` 失败，可手动准备 `third_party/`，或配置镜像后重试。Git 操作通常比 HTTPS 下载 GitHub 首页更稳定；`codeload.github.com` 也可用于手动下载 zip。

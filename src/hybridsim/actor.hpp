@@ -28,6 +28,19 @@ public:
     send(make_message<Msg>(std::move(msg)));
   }
 
+  // Deliver at simulation time `when` (immediate if when <= now).
+  void send_at(double when, std::shared_ptr<message> msg) {
+    if (when <= sim_.now()) {
+      send(std::move(msg));
+      return;
+    }
+    delayed_deliver(sim_, *this, when, std::move(msg));
+  }
+
+  template <typename Msg> void send_at(double when, Msg msg) {
+    send_at(when, make_message<Msg>(std::move(msg)));
+  }
+
   simcpp20::process<> run() { return run_loop(sim_, *this); }
 
   void start() { run_process_ = run(); }
@@ -56,6 +69,13 @@ protected:
   std::exception_ptr error_;
 
 private:
+  static simcpp20::process<> delayed_deliver(simcpp20::simulation<> &sim,
+                                             actor &self, double when,
+                                             std::shared_ptr<message> msg) {
+    co_await sim.timeout(when - sim.now());
+    self.send(std::move(msg));
+  }
+
   static simcpp20::process<> run_loop(simcpp20::simulation<> &sim, actor &self) {
     while (self.running_) {
       try {

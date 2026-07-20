@@ -94,6 +94,11 @@ void actor_send_object(PythonActor &self, py::object obj);
 void actor_send_type(PythonActor &self, const MessageType &msg_type,
                      py::kwargs kwargs);
 
+void actor_send_at_object(PythonActor &self, double when, py::object obj);
+
+void actor_send_at_type(PythonActor &self, double when,
+                        const MessageType &msg_type, py::kwargs kwargs);
+
 void check_actor_errors(const PythonActor &self);
 
 } // namespace hybridsim::python

@@ -135,6 +135,44 @@ def test_simulation_run_until():
     assert seen["count"] >= 1
 
 
+def test_send_at_delivers_at_time():
+    sim = hs.Simulation()
+    Tick = sim.register_message("Tick")
+    actor = hs.Actor(sim)
+    events = []
+
+    def on_tick(_actor, msg):
+        events.append((sim.now(), msg.n))
+
+    actor.on(Tick, on_tick)
+    actor.start()
+    actor.send_at(5.0, Tick, n=2)
+    actor.send_at(2.0, Tick, n=1)
+    actor.send_at(0.0, Tick, n=0)  # immediate
+    sim.run()
+    actor.check_error()
+    assert events == [(0.0, 0), (2.0, 1), (5.0, 2)]
+    assert sim.now() == 5.0
+
+
+def test_send_at_interleaves_with_immediate():
+    sim = hs.Simulation()
+    Tick = sim.register_message("Tick")
+    actor = hs.Actor(sim)
+    events = []
+
+    def on_tick(_actor, msg):
+        events.append((sim.now(), msg.label))
+
+    actor.on(Tick, on_tick)
+    actor.start()
+    actor.send_at(1.0, Tick, label="delayed")
+    actor.send(Tick, label="immediate")
+    sim.run()
+    actor.check_error()
+    assert events == [(0.0, "immediate"), (1.0, "delayed")]
+
+
 def main():
     test_sync_handler()
     test_class_message()
@@ -142,6 +180,8 @@ def main():
     test_unknown_message_raises()
     test_ping_pong()
     test_simulation_run_until()
+    test_send_at_delivers_at_time()
+    test_send_at_interleaves_with_immediate()
     print("All Python actor tests passed.")
 
 

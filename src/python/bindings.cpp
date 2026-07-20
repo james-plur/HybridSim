@@ -89,6 +89,23 @@ PYBIND11_MODULE(hybridsim_py, m) {
           },
           py::arg("message"),
           "Send a message instance or construct one from a MessageType")
+      .def(
+          "send_at",
+          [](hybridsim::python::PythonActor &self, double when, py::object arg,
+             py::kwargs kwargs) {
+            if (py::isinstance<hybridsim::python::MessageType>(arg)) {
+              hybridsim::python::actor_send_at_type(
+                  self, when, arg.cast<hybridsim::python::MessageType>(), kwargs);
+              return;
+            }
+            if (!kwargs.empty()) {
+              throw std::runtime_error(
+                  "keyword arguments require a MessageType as the first argument");
+            }
+            hybridsim::python::actor_send_at_object(self, when, std::move(arg));
+          },
+          py::arg("when"), py::arg("message"),
+          "Deliver a message at simulation time `when` (immediate if when <= now)")
       .def("start",
            [](std::shared_ptr<hybridsim::python::PythonActor> &self) {
              self->actor->start();

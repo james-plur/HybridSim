@@ -15,7 +15,7 @@ include(Dependencies)
 hybridsim_acquire_simcpp20()
 
 add_library(hybridsim INTERFACE)
-target_include_directories(hybridsim INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_include_directories(hybridsim INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(hybridsim INTERFACE fschuetz04::simcpp20)
 target_compile_features(hybridsim INTERFACE cxx_std_20)
 
@@ -87,7 +87,7 @@ if(HYBRIDSIM_BUILD_TESTS)
   endif()
 endif()
 
-install(DIRECTORY include/hybridsim DESTINATION include)
+install(DIRECTORY src/hybridsim DESTINATION include)
 if(HYBRIDSIM_BUILD_PYTHON)
   install(TARGETS hybridsim_py LIBRARY DESTINATION lib)
 endif()

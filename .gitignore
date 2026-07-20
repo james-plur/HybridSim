@@ -1,3 +1,6 @@
 build/
 build-*/
 third_party/
+*.json
+*.pyc
+outputs/
