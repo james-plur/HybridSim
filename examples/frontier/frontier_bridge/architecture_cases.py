@@ -6,8 +6,9 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from frontier_bridge.config import frontier_root
 
-FRONTIER_ROOT = Path("/home/y_luchenda/Frontier")
+FRONTIER_ROOT = frontier_root()
 CASES = [
     ("co-location", "offline/dense_model_basic.sh"),
     ("co-location", "offline/moe_model_basic.sh"),

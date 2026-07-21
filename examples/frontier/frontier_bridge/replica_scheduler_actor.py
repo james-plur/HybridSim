@@ -7,14 +7,14 @@ from typing import Any, Callable, Optional
 from frontier.entities import Batch
 from frontier.types import ClusterType
 
-from hybridsim_scheduler.actor_base import ActorBase, on
-from hybridsim_scheduler.batch_completion import (
+from hybridsim import ActorBase, on
+from frontier_bridge.batch_completion import (
     complete_global_batch,
     complete_prefill_batch,
 )
-from hybridsim_scheduler.batch_executor import BatchWorkload, build_batch_workload
-from hybridsim_scheduler.messages import BatchCompleteMsg, ReplicaScheduleMsg
-from hybridsim_scheduler.schedule_trace import ScheduleTraceRecorder
+from frontier_bridge.batch_executor import BatchWorkload, build_batch_workload
+from frontier_bridge.messages import BatchCompleteMsg, ReplicaScheduleMsg
+from hybridsim import ScheduleTraceRecorder
 
 
 class ReplicaSchedulerActor(ActorBase):
@@ -131,7 +131,7 @@ class ReplicaSchedulerActor(ActorBase):
                     },
                 )
 
-            from hybridsim_scheduler.batch_executor import batch_to_workload_dict
+            from frontier_bridge.batch_executor import batch_to_workload_dict
 
             self._engine.send_workload(
                 batch_to_workload_dict(
@@ -214,7 +214,7 @@ class ReplicaSchedulerActor(ActorBase):
                             "target": transfer.transfer_info.target_cluster_type.name,
                         },
                     )
-                from hybridsim_scheduler.batch_executor import batch_to_workload_dict
+                from frontier_bridge.batch_executor import batch_to_workload_dict
 
                 self._engine.send_workload(
                     batch_to_workload_dict(

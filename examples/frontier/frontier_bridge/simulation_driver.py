@@ -1,56 +1,58 @@
-"""Assemble hybridsim scheduler actors and run Frontier-compatible simulations."""
+"""Build a platform Simulation with Frontier actors/messages registered."""
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable, Optional, Union
 
-from frontier.config import SimulationConfig as FrontierSimulationConfig
 from frontier.entities import Request
 from frontier.types import ClusterType
 
-from hybridsim_scheduler.batch_completion import handle_kv_transfer_complete
-from hybridsim_scheduler.cluster_scheduler_actor import ClusterSchedulerActor
-from hybridsim_scheduler.config import (
+from hybridsim import ScheduleTraceRecorder, Simulation as PlatformSimulation
+
+from frontier_bridge.batch_completion import handle_kv_transfer_complete
+from frontier_bridge.cluster_scheduler_actor import ClusterSchedulerActor
+from frontier_bridge.config import (
     ArchitectureConfig,
-    SimulationConfig,
+    MonolithicConfig,
     load_frontier_config_from_cli_args,
 )
-from hybridsim_scheduler.frontier_bridge.factory import build_scheduler_bundle
-from hybridsim_scheduler.messages import register_scheduler_messages
-from hybridsim_scheduler.replica_scheduler_actor import ReplicaSchedulerActor
-from hybridsim_scheduler.schedule_trace import ScheduleTraceRecorder
+from frontier_bridge.factory import build_scheduler_bundle
+from frontier_bridge.messages import (
+    BatchCompleteMsg,
+    ClusterScheduleMsg,
+    KVTransferCompleteMsg,
+    ReplicaScheduleMsg,
+    RequestArrivalMsg,
+)
+from frontier_bridge.replica_scheduler_actor import ReplicaSchedulerActor
+
+FrontierConfig = Union[ArchitectureConfig, MonolithicConfig]
 
 
-def _ensure_hybridsim_py_on_path(build_dir: Optional[Path] = None) -> None:
-    if build_dir is None:
-        build_dir = Path(__file__).resolve().parents[3] / "build"
-    build_dir = build_dir.resolve()
-    build_pkg = str(build_dir)
-    if build_pkg not in sys.path:
-        sys.path.insert(0, build_pkg)
+class FrontierSimulation(PlatformSimulation):
+    """Platform Simulation with Frontier scheduler actors and request helpers."""
 
-
-class Simulation:
-    """Unified hybridsim entry: ``Simulation(ArchitectureConfig | MonolithicConfig | ...)``."""
-
-    def __init__(self, config: SimulationConfig) -> None:
-        _ensure_hybridsim_py_on_path(config.build_dir)
-        import hybridsim_py as hs
-
-        self._hs = hs
-        self.sim_config = config
-        self.config = config.to_frontier()
-        self.bundle = build_scheduler_bundle(self.config)
-        self.sim = hs.Simulation()
-        self.message_types = register_scheduler_messages(self.sim)
+    def __init__(self, config: FrontierConfig) -> None:
+        super().__init__(config)
+        self.frontier_config = config
+        self.frontier = config.to_frontier()
+        self.bundle = build_scheduler_bundle(self.frontier)
+        self.register_messages(
+            [
+                RequestArrivalMsg,
+                ClusterScheduleMsg,
+                ReplicaScheduleMsg,
+                BatchCompleteMsg,
+                KVTransferCompleteMsg,
+            ]
+        )
         self.trace = ScheduleTraceRecorder(
             source="hybridsim",
             run_dir=config.trace_output_dir,
             metadata={
-                "sys_arch": self.config.sys_arch,
-                "simulation_mode": self.config.simulation_mode,
+                "sys_arch": self.frontier.sys_arch,
+                "simulation_mode": self.frontier.simulation_mode,
             },
         )
 
@@ -61,18 +63,19 @@ class Simulation:
         for cluster_type in self.bundle.clusters:
             self._setup_cluster(cluster_type)
 
+        self.before_run = self._schedule_arrivals
+
     def _setup_cluster(self, cluster_type: ClusterType) -> None:
-        hs_actor = self._hs.Actor(self.sim)
         replicas_for_cluster: dict[tuple[int, int], ReplicaSchedulerActor] = {}
 
         for replica_id, dp_id in self.bundle.replica_scheduler_keys(cluster_type):
-            engine = self._hs.EngineActor(self.sim)
-            hs_replica_actor = self._hs.Actor(self.sim)
+            engine = self.create_engine_actor()
+            hs_replica_actor = self.create_hs_actor()
             replica_scheduler = self.bundle.get_replica_scheduler(
                 cluster_type, replica_id, dp_id
             )
             replica = ReplicaSchedulerActor(
-                sim=self.sim,
+                sim=self.hs_sim,
                 hs_actor=hs_replica_actor,
                 engine=engine,
                 replica_scheduler=replica_scheduler,
@@ -86,23 +89,25 @@ class Simulation:
                 kv_cache_transfer_predictor=self.bundle.kv_cache_transfer_predictor,
                 on_kv_transfer=self._on_kv_transfer_complete,
             )
+            self.add_actor(replica)
             replicas_for_cluster[(replica_id, dp_id)] = replica
             self._replicas[(cluster_type, replica_id, dp_id)] = replica
 
         cluster = ClusterSchedulerActor(
-            sim=self.sim,
-            hs_actor=hs_actor,
+            sim=self.hs_sim,
+            hs_actor=self.create_hs_actor(),
             bundle=self.bundle,
             cluster_type=cluster_type,
             message_types=self.message_types,
             replica_actors=replicas_for_cluster,
             trace=self.trace,
         )
+        self.add_actor(cluster)
         self._clusters[cluster_type] = cluster
 
     def _on_kv_transfer_complete(self, transfer_info) -> None:
         clusters = handle_kv_transfer_complete(
-            time_s=self.sim.now(),
+            time_s=self.hs_sim.now(),
             transfer_info=transfer_info,
             global_scheduler=self.bundle.global_scheduler,
         )
@@ -113,12 +118,6 @@ class Simulation:
         if self.bundle.is_disaggregated:
             return ClusterType.PREFILL
         return ClusterType.MONOLITHIC
-
-    def _start_actors(self) -> None:
-        for cluster in self._clusters.values():
-            cluster.start()
-        for replica in self._replicas.values():
-            replica.start()
 
     def generate_requests(self) -> list[Request]:
         requests = self.bundle.request_generator.generate()
@@ -132,7 +131,6 @@ class Simulation:
         num_prefill_tokens: int,
         num_decode_tokens: int,
     ) -> Request:
-        """Create a request and append it for later injection / scheduling."""
         request = Request(
             arrived_at=arrived_at,
             num_prefill_tokens=num_prefill_tokens,
@@ -142,11 +140,10 @@ class Simulation:
         return request
 
     def inject_request(self, request: Request) -> None:
-        """Enqueue a RequestArrival at the current simulation time."""
         if request not in self._requests:
             self._requests.append(request)
         cluster_type = self._arrival_cluster()
-        request.set_arrived_at(self.sim.now())
+        request.set_arrived_at(self.hs_sim.now())
         self._clusters[cluster_type].send_request_arrival(request)
         setattr(request, "_hybridsim_arrival_scheduled", True)
 
@@ -154,15 +151,7 @@ class Simulation:
         for request in requests:
             self.inject_request(request)
 
-    def run(self) -> None:
-        """Start actors, schedule arrivals, then drain the DES.
-
-        If ``_requests`` is already populated (e.g. via ``add_request`` /
-        ``inject_request``), those requests are used; otherwise requests are
-        generated from the Frontier request generator.
-        """
-        self._start_actors()
-
+    def _schedule_arrivals(self) -> None:
         if not self._requests:
             requests = sorted(
                 self.generate_requests(), key=lambda request: request.arrived_at
@@ -170,20 +159,12 @@ class Simulation:
         else:
             requests = list(self._requests)
 
-        arrival_cluster = self._arrival_cluster()
-        cluster = self._clusters[arrival_cluster]
+        cluster = self._clusters[self._arrival_cluster()]
         for request in requests:
             if getattr(request, "_hybridsim_arrival_scheduled", False):
                 continue
             cluster.send_request_arrival_at(request.arrived_at, request)
             setattr(request, "_hybridsim_arrival_scheduled", True)
-        self.sim.run()
-
-    def check_errors(self) -> None:
-        for replica in self._replicas.values():
-            replica.check_error()
-        for cluster in self._clusters.values():
-            cluster.check_error()
 
     @property
     def requests(self) -> list[Request]:
@@ -212,8 +193,12 @@ class Simulation:
         return profile_path
 
 
-def load_config_from_cli_args(cli_args: list[str]) -> FrontierSimulationConfig:
-    """Parse Frontier config from CLI args."""
+def build_frontier_simulation(config: FrontierConfig) -> FrontierSimulation:
+    """Register Frontier msgs/actors on a platform Simulation and return it."""
+    return FrontierSimulation(config)
+
+
+def load_config_from_cli_args(cli_args: list[str]):
     return load_frontier_config_from_cli_args(cli_args)
 
 
@@ -222,13 +207,13 @@ def run_from_cli_args(
     *,
     build_dir: Optional[Path] = None,
     trace_output_dir: Optional[Path] = None,
-) -> Simulation:
+) -> FrontierSimulation:
     config = ArchitectureConfig(
         frontier=load_frontier_config_from_cli_args(cli_args),
         build_dir=build_dir,
         trace_output_dir=trace_output_dir,
     )
-    simulation = Simulation(config)
+    simulation = build_frontier_simulation(config)
     simulation.run()
     simulation.check_errors()
     if trace_output_dir is not None:

@@ -1,4 +1,4 @@
-"""Base class and @on decorator for hybridsim scheduler actor wrappers."""
+"""Base class and @on decorator for hybridsim actors."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from typing import Any, Iterator
 
 
 def on(msg_cls: type):
-    """Mark a method as the handler for a message dataclass (e.g. RequestArrivalMsg)."""
+    """Mark a method as the handler for a message dataclass."""
 
     def decorator(fn):
         fn.__actor_msg__ = msg_cls
@@ -43,6 +43,9 @@ class ActorBase:
 
     def start(self) -> None:
         self._actor.start()
+
+    def stop(self) -> None:
+        self._actor.stop()
 
     def send(self, msg_cls: type, **kwargs) -> None:
         self._actor.send(self._messages[msg_cls.__name__], **kwargs)

@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Minimal MONOLITHIC scheduler demo for hybridsim + Frontier integration.
+"""Minimal MONOLITHIC scheduler demo for hybridsim + Frontier.
 
-Requires Frontier installed as a third-party package:
+Requires:
+  pip install -e /path/to/hybridsim
   pip install -e /path/to/Frontier
+  PYTHONPATH=examples/frontier  (or run from this directory)
 """
 
 from __future__ import annotations
@@ -10,18 +12,20 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src" / "python"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from hybridsim_scheduler import MonolithicConfig, ReplicaSchedulerKind, Simulation
+from frontier_bridge import (
+    MonolithicConfig,
+    ReplicaSchedulerKind,
+    build_frontier_simulation,
+)
 
 
 def main() -> None:
-    simulation = Simulation(
+    simulation = build_frontier_simulation(
         MonolithicConfig(
             replica_scheduler_kind=ReplicaSchedulerKind.VLLM_V1,
             dummy_execution_time_ms=50.0,
-            build_dir=ROOT / "build",
         )
     )
 

@@ -4,26 +4,27 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src" / "python"))
-sys.path.insert(0, str(ROOT / "build"))
+ROOT = Path(__file__).resolve().parents[2]
+FRONTIER_EXAMPLE = Path(__file__).resolve().parent
+sys.path.insert(0, str(FRONTIER_EXAMPLE))
 
-from hybridsim_scheduler.architecture_cases import (
+from frontier_bridge.architecture_cases import (
     ArchitectureCase,
     build_cli_args,
     list_cases,
 )
-from hybridsim_scheduler.simulation_driver import load_config_from_cli_args, run_from_cli_args
+from frontier_bridge.config import frontier_root
+from frontier_bridge.simulation_driver import load_config_from_cli_args, run_from_cli_args
 
 from build_schedule_profile import build_frontier_profile, compare_profiles, write_profile
 
-
-OUTPUT_ROOT = Path("/home/y_luchenda/hybridsim/outputs/architecture_compare")
-FRONTIER_ROOT = Path("/home/y_luchenda/Frontier")
+OUTPUT_ROOT = ROOT / "outputs" / "architecture_compare"
+FRONTIER_ROOT = frontier_root()
 
 
 def run_frontier(case: ArchitectureCase, output_dir: Path) -> Path:
@@ -32,8 +33,8 @@ def run_frontier(case: ArchitectureCase, output_dir: Path) -> Path:
     reset_global_vars()
     cli_args = build_cli_args(case, metrics_output_dir=output_dir, enable_trace=True)
     env = {
-        **dict(__import__("os").environ),
-        "PYTHONPATH": f"{FRONTIER_ROOT}:{__import__('os').environ.get('PYTHONPATH', '')}",
+        **dict(os.environ),
+        "PYTHONPATH": f"{FRONTIER_ROOT}:{os.environ.get('PYTHONPATH', '')}",
         "WANDB_DISABLED": "true",
         "VIDUR_DISABLE_WANDB": "1",
     }
@@ -48,15 +49,12 @@ def run_hybridsim(case: ArchitectureCase, output_dir: Path) -> Path:
 
     reset_global_vars()
     cli_args = build_cli_args(case, metrics_output_dir=output_dir, enable_trace=False)
-    import os
-
     previous_cwd = os.getcwd()
     try:
         os.chdir(FRONTIER_ROOT)
         config = load_config_from_cli_args(cli_args)
         run_from_cli_args(
             cli_args,
-            build_dir=ROOT / "build",
             trace_output_dir=Path(config.metrics_config.output_dir),
         )
         return Path(config.metrics_config.output_dir)

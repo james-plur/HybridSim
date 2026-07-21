@@ -6,10 +6,10 @@ from typing import Any, Callable, Optional
 
 from frontier.types import ClusterType
 
-from hybridsim_scheduler.actor_base import ActorBase, on
-from hybridsim_scheduler.frontier_bridge.factory import SchedulerBundle
-from hybridsim_scheduler.messages import ClusterScheduleMsg, RequestArrivalMsg
-from hybridsim_scheduler.schedule_trace import ScheduleTraceRecorder
+from hybridsim import ActorBase, ScheduleTraceRecorder, on
+
+from frontier_bridge.factory import SchedulerBundle
+from frontier_bridge.messages import ClusterScheduleMsg, RequestArrivalMsg
 
 
 class ClusterSchedulerActor(ActorBase):

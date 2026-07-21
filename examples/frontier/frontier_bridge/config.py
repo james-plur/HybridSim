@@ -1,38 +1,34 @@
-"""Hybridsim simulation configuration dataclasses.
-
-Hierarchy (extend with new subclasses for future simulation kinds)::
-
-    SimulationConfig          # shared runtime options
-    ├── ArchitectureConfig    # Frontier architecture CLI / case runs
-    └── MonolithicConfig      # single-cluster MONOLITHIC smoke / demos
-
-``Simulation`` takes any ``SimulationConfig`` specialization and obtains the
-underlying Frontier config via ``to_frontier()``.
-"""
+"""Frontier-specific simulation configs (extend platform SimulationConfig)."""
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, Sequence
 
 from frontier.config import SimulationConfig as FrontierSimulationConfig
 
+from hybridsim.config import SimulationConfig
+
 if TYPE_CHECKING:
-    from hybridsim_scheduler.frontier_bridge.context import ReplicaSchedulerKind
+    from frontier_bridge.context import ReplicaSchedulerKind
+
+
+def frontier_root() -> Path:
+    return Path(os.environ.get("FRONTIER_ROOT", "/home/y_luchenda/Frontier"))
 
 
 def load_frontier_config_from_cli_args(cli_args: list[str]) -> FrontierSimulationConfig:
     """Parse Frontier ``SimulationConfig`` from CLI-style argument list."""
-    import os
     import sys
 
     old_argv = sys.argv
     previous_cwd = os.getcwd()
-    frontier_root = Path("/home/y_luchenda/Frontier")
+    root = frontier_root()
     try:
-        if frontier_root.exists():
-            os.chdir(frontier_root)
+        if root.exists():
+            os.chdir(root)
         sys.argv = ["hybridsim"] + list(cli_args)
         return FrontierSimulationConfig.create_from_cli_args()
     finally:
@@ -41,36 +37,9 @@ def load_frontier_config_from_cli_args(cli_args: list[str]) -> FrontierSimulatio
 
 
 @dataclass
-class SimulationConfig:
-    """Base hybridsim simulation configuration.
-
-    Holds options that apply to every simulation kind. Scenario-specific fields
-    belong on subclasses (``ArchitectureConfig``, ``MonolithicConfig``, ...).
-    Subclasses must implement ``to_frontier()`` so ``Simulation`` can build the
-    Frontier scheduler bundle without knowing the concrete config type.
-    """
-
-    #: Directory containing the built ``hybridsim_py`` extension module.
-    build_dir: Optional[Path] = None
-    #: If set, schedule traces are written under this directory.
-    trace_output_dir: Optional[Path] = None
-
-    def to_frontier(self) -> FrontierSimulationConfig:
-        """Materialize the Frontier ``SimulationConfig`` used by the bridge."""
-        raise NotImplementedError(
-            f"{type(self).__name__} must implement to_frontier()"
-        )
-
-
-@dataclass
 class ArchitectureConfig(SimulationConfig):
-    """Config for Frontier architecture cases (co-location / PDD, online/offline).
+    """Config for Frontier architecture cases (co-location / PDD, online/offline)."""
 
-    Typically produced by ``load_frontier_config_from_cli_args`` (or
-    ``architecture_cases.build_cli_args``) and passed to ``Simulation``.
-    """
-
-    #: Pre-built Frontier config; required before constructing ``Simulation``.
     frontier: FrontierSimulationConfig | None = None
 
     def to_frontier(self) -> FrontierSimulationConfig:
@@ -78,19 +47,24 @@ class ArchitectureConfig(SimulationConfig):
             raise ValueError("ArchitectureConfig.frontier is required")
         return self.frontier
 
+    @classmethod
+    def from_cli_args(cls, argv: Sequence[str] | None = None) -> ArchitectureConfig:
+        import sys
+
+        raw = list(sys.argv[1:] if argv is None else argv)
+        common, remaining = cls.parse_common_cli_args(raw)
+        frontier = load_frontier_config_from_cli_args(remaining)
+        return cls(frontier=frontier, **common)
+
 
 @dataclass
 class MonolithicConfig(SimulationConfig):
-    """Config for a single MONOLITHIC cluster smoke / demo run.
-
-    Use ``Simulation(MonolithicConfig(...))`` as the entry point.
-    """
+    """Config for a single MONOLITHIC cluster smoke / demo run."""
 
     replica_scheduler_kind: Optional["ReplicaSchedulerKind"] = None
     num_replicas: int = 1
     attn_data_parallel_size: int = 1
     dummy_execution_time_ms: float = 100.0
-    #: Alias for metrics output; copied into ``trace_output_dir`` when unset.
     metrics_output_dir: Optional[Path] = None
     run_id: str = "monolithic_smoke"
 
@@ -99,8 +73,7 @@ class MonolithicConfig(SimulationConfig):
             self.trace_output_dir = self.metrics_output_dir
 
     def build_cli_args(self) -> list[str]:
-        """CLI args that produce an equivalent Frontier MONOLITHIC config."""
-        from hybridsim_scheduler.frontier_bridge.context import ReplicaSchedulerKind
+        from frontier_bridge.context import ReplicaSchedulerKind
 
         kind = self.replica_scheduler_kind or ReplicaSchedulerKind.VLLM_V1
         metrics_dir = self.metrics_output_dir or self.trace_output_dir
@@ -141,3 +114,9 @@ class MonolithicConfig(SimulationConfig):
 
     def to_frontier(self) -> FrontierSimulationConfig:
         return load_frontier_config_from_cli_args(self.build_cli_args())
+
+    @classmethod
+    def from_cli_args(cls, argv: Sequence[str] | None = None) -> MonolithicConfig:
+        # Monolithic knobs are dataclass fields; CLI for Frontier is built in to_frontier().
+        common, _ = cls.parse_common_cli_args(argv or [])
+        return cls(**common)

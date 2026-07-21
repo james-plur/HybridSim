@@ -48,19 +48,15 @@ if(HYBRIDSIM_BUILD_EXAMPLES)
   add_executable(actor_ping_pong examples/actor_ping_pong.cpp)
   target_link_libraries(actor_ping_pong PRIVATE hybridsim)
   hybridsim_target_options(actor_ping_pong)
-
-  add_executable(engine_actor samples/engine_actor.cpp)
-  target_link_libraries(engine_actor PRIVATE hybridsim)
-  hybridsim_target_options(engine_actor)
 endif()
 
 if(HYBRIDSIM_BUILD_PYTHON)
   find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
   hybridsim_acquire_pybind11()
   pybind11_add_module(hybridsim_py
-    src/python/bindings.cpp
-    src/python/bindings_common.cpp
-    src/python/engine_bindings.cpp)
+    src/python/binding/bindings.cpp
+    src/python/binding/bindings_common.cpp
+    src/python/binding/engine_bindings.cpp)
   target_link_libraries(hybridsim_py PRIVATE hybridsim)
   hybridsim_target_options(hybridsim_py)
 endif()
@@ -73,16 +69,12 @@ if(HYBRIDSIM_BUILD_TESTS)
   add_test(NAME engine_actor_tests COMMAND engine_actor_tests)
   if(HYBRIDSIM_BUILD_EXAMPLES)
     add_test(NAME actor_ping_pong COMMAND actor_ping_pong)
-    add_test(NAME engine_actor COMMAND engine_actor)
   endif()
   if(HYBRIDSIM_BUILD_PYTHON)
     add_test(
-      NAME actor_python_tests
-      COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_actor_python.py
-      WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
-    add_test(
-      NAME engine_python_tests
-      COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_engine_python.py
+      NAME python_unittest
+      COMMAND ${Python3_EXECUTABLE} -m unittest discover
+              -s ${CMAKE_CURRENT_SOURCE_DIR}/tests -v
       WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
   endif()
 endif()

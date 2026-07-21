@@ -1,20 +1,15 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=68", "wheel", "cmake>=3.14", "ninja"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "hybridsim-scheduler"
+name = "hybridsim"
 version = "0.1.0"
-description = "Actor-based MONOLITHIC LLM scheduler bridge for hybridsim, backed by Frontier."
+description = "Actor-based discrete-event simulation platform (Python bindings + infrastructure)."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = []
 
-[project.optional-dependencies]
-scheduler = [
-  "frontier-simulator",
-]
-
 [tool.setuptools.packages.find]
 where = ["src/python"]
-include = ["hybridsim_scheduler*"]
+include = ["hybridsim*"]
