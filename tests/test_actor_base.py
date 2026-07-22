@@ -52,6 +52,113 @@ class ActorBaseTests(unittest.TestCase):
         self.assertEqual(events, [("ping", 0.0, 1), ("pong", 1.0, 2)])
         self.assertEqual(sim.now(), 1.0)
 
+    def test_actor_base_request_reply(self) -> None:
+        sim = hs.Simulation()
+
+        @dataclass
+        class QueryMsg:
+            id: int = 0
+
+        @dataclass
+        class StartMsg:
+            pass
+
+        message_types = {
+            "QueryMsg": sim.register_message(QueryMsg),
+            "StartMsg": sim.register_message(StartMsg),
+        }
+        got = {"value": None}
+
+        class Worker(ActorBase):
+            @on(QueryMsg)
+            def handle_query(self, _actor, msg) -> None:
+                self.reply({"echo": msg.id})
+
+        class Client(ActorBase):
+            def __init__(self, *, worker: Worker, **kwargs):
+                super().__init__(**kwargs)
+                self.worker = worker
+
+            @on(StartMsg)
+            async def handle_start(self, _actor, _msg):
+                got["value"] = await self.request(self.worker, QueryMsg, id=9)
+
+        worker = Worker(sim=sim, hs_actor=hs.Actor(sim), message_types=message_types)
+        client = Client(
+            worker=worker,
+            sim=sim,
+            hs_actor=hs.Actor(sim),
+            message_types=message_types,
+        )
+        worker.start()
+        client.start()
+        client.send(StartMsg)
+        sim.run()
+        worker.check_error()
+        client.check_error()
+        self.assertEqual(got["value"], {"echo": 9})
+
+    def test_actor_base_send_request_delay(self) -> None:
+        sim = hs.Simulation()
+
+        @dataclass
+        class SetMsg:
+            value: int = 0
+
+        @dataclass
+        class QueryMsg:
+            id: int = 0
+
+        @dataclass
+        class StartMsg:
+            pass
+
+        message_types = {
+            "SetMsg": sim.register_message(SetMsg),
+            "QueryMsg": sim.register_message(QueryMsg),
+            "StartMsg": sim.register_message(StartMsg),
+        }
+        events: list[tuple[float, str]] = []
+
+        class Worker(ActorBase):
+            @on(SetMsg)
+            def handle_set(self, _actor, msg) -> None:
+                events.append((self.sim.now(), f"set:{msg.value}"))
+
+            @on(QueryMsg)
+            def handle_query(self, _actor, msg) -> None:
+                events.append((self.sim.now(), f"query:{msg.id}"))
+                self.reply({"id": msg.id})
+
+        class Client(ActorBase):
+            def __init__(self, *, worker: Worker, **kwargs):
+                super().__init__(**kwargs)
+                self.worker = worker
+
+            @on(StartMsg)
+            async def handle_start(self, _actor, _msg):
+                self.worker.send(SetMsg, delay=1.0, value=3)
+                reply = await self.request(self.worker, QueryMsg, delay=2.0, id=5)
+                events.append((self.sim.now(), f"done:{reply['id']}"))
+
+        worker = Worker(sim=sim, hs_actor=hs.Actor(sim), message_types=message_types)
+        client = Client(
+            worker=worker,
+            sim=sim,
+            hs_actor=hs.Actor(sim),
+            message_types=message_types,
+        )
+        worker.start()
+        client.start()
+        client.send(StartMsg)
+        sim.run()
+        worker.check_error()
+        client.check_error()
+        self.assertEqual(
+            events,
+            [(1.0, "set:3"), (2.0, "query:5"), (2.0, "done:5")],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

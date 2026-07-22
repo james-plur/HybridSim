@@ -5,3 +5,4 @@
 #include "hybridsim/dynamic_message.hpp"
 #include "hybridsim/handler.hpp"
 #include "hybridsim/message.hpp"
+#include "hybridsim/request.hpp"

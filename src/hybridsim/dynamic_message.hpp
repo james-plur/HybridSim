@@ -2,6 +2,8 @@
 
 #include "hybridsim/message.hpp"
 
+#include "fschuetz04/simcpp20.hpp"
+
 #include <any>
 #include <memory>
 #include <stdexcept>
@@ -50,10 +52,32 @@ private:
   std::unordered_map<std::size_t, std::string> id_to_name_;
 };
 
+/// Shared reply channel for dynamic (Python) request/reply.
+struct dynamic_reply_channel {
+  explicit dynamic_reply_channel(simcpp20::simulation<> &sim)
+      : event(sim.template event<std::any>()) {}
+
+  simcpp20::value_event<std::any> event;
+  bool replied = false;
+
+  void complete(std::any value = {}) {
+    if (replied) {
+      return;
+    }
+    replied = true;
+    event.trigger(std::move(value));
+  }
+};
+
 class dynamic_message : public message {
 public:
   dynamic_message(std::size_t type_id, std::any payload)
       : type_id_{type_id}, payload_{std::move(payload)} {}
+
+  dynamic_message(std::size_t type_id, std::any payload,
+                  std::shared_ptr<dynamic_reply_channel> reply)
+      : type_id_{type_id}, payload_{std::move(payload)},
+        reply_{std::move(reply)} {}
 
   std::type_index type() const noexcept override {
     static const std::type_index idx(typeid(dynamic_message));
@@ -65,14 +89,33 @@ public:
   std::any &payload() noexcept { return payload_; }
   const std::any &payload() const noexcept { return payload_; }
 
+  bool is_request() const noexcept { return static_cast<bool>(reply_); }
+
+  dynamic_reply_channel *reply_channel() const noexcept {
+    return reply_.get();
+  }
+
+  const std::shared_ptr<dynamic_reply_channel> &reply_channel_ptr() const noexcept {
+    return reply_;
+  }
+
 private:
   std::size_t type_id_;
   std::any payload_;
+  std::shared_ptr<dynamic_reply_channel> reply_;
 };
 
 inline std::shared_ptr<dynamic_message>
 make_dynamic_message(std::size_t type_id, std::any payload) {
   return std::make_shared<dynamic_message>(type_id, std::move(payload));
+}
+
+inline std::shared_ptr<dynamic_message>
+make_dynamic_request(std::size_t type_id, std::any payload,
+                     simcpp20::simulation<> &sim) {
+  auto channel = std::make_shared<dynamic_reply_channel>(sim);
+  return std::make_shared<dynamic_message>(type_id, std::move(payload),
+                                           std::move(channel));
 }
 
 } // namespace hybridsim

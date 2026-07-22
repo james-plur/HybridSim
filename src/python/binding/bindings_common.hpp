@@ -33,6 +33,26 @@ struct PythonActor {
   std::shared_ptr<dynamic_actor> actor;
 };
 
+/// Awaitable reply handle for Python ``request`` / ``request_at``.
+struct ReplyFuture {
+  std::shared_ptr<dynamic_reply_channel> channel;
+
+  bool ready() const noexcept {
+    return channel && channel->replied;
+  }
+
+  py::object value() const {
+    if (!ready()) {
+      throw std::runtime_error("ReplyFuture is not ready");
+    }
+    const std::any &raw = channel->event.value();
+    if (!raw.has_value()) {
+      return py::none();
+    }
+    return std::any_cast<py::object>(raw);
+  }
+};
+
 class TypeRegistry {
 public:
   MessageType register_type(const std::string &name, py::object py_class) {
@@ -89,15 +109,34 @@ MessageType register_message(py::object spec);
 void actor_on(const std::shared_ptr<PythonActor> &self,
               const MessageType &msg_type, py::function handler);
 
-void actor_send_object(PythonActor &self, py::object obj);
+void actor_send_object(PythonActor &self, py::object obj, double delay = 0.0);
 
 void actor_send_type(PythonActor &self, const MessageType &msg_type,
-                     py::kwargs kwargs);
+                     py::kwargs kwargs, double delay = 0.0);
 
 void actor_send_at_object(PythonActor &self, double when, py::object obj);
 
 void actor_send_at_type(PythonActor &self, double when,
                         const MessageType &msg_type, py::kwargs kwargs);
+
+ReplyFuture actor_request_object(PythonActor &self, py::object obj,
+                                 double delay = 0.0);
+
+ReplyFuture actor_request_type(PythonActor &self, const MessageType &msg_type,
+                               py::kwargs kwargs, double delay = 0.0);
+
+ReplyFuture actor_request_at_object(PythonActor &self, double when,
+                                    py::object obj);
+
+ReplyFuture actor_request_at_type(PythonActor &self, double when,
+                                  const MessageType &msg_type,
+                                  py::kwargs kwargs);
+
+void actor_reply(PythonActor &self, py::object value);
+
+void actor_reply_at(PythonActor &self, double when, py::object value);
+
+py::object actor_current_request(PythonActor &self);
 
 void check_actor_errors(const PythonActor &self);
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "hybridsim/message.hpp"
+#include "hybridsim/request.hpp"
 
 #include "fschuetz04/simcpp20.hpp"
 
@@ -32,14 +33,14 @@ template <typename Msg, typename F>
 simcpp20::process<> dispatch_sync(simcpp20::simulation<> &,
                                   actor &self, std::shared_ptr<message> msg,
                                   F handler) {
-  handler(self, as_message<Msg>(*msg));
+  handler(self, message_payload<Msg>(*msg));
   co_return;
 }
 
 template <typename Msg, typename F>
 simcpp20::process<> dispatch_async(simcpp20::simulation<> &sim, actor &self,
                                    std::shared_ptr<message> msg, F handler) {
-  co_await handler(sim, self, as_message<Msg>(*msg));
+  co_await handler(sim, self, message_payload<Msg>(*msg));
 }
 
 template <typename Msg, typename F>

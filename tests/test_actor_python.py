@@ -165,6 +165,115 @@ class ActorPythonTests(unittest.TestCase):
         actor.check_error()
         self.assertEqual(events, [(0.0, "immediate"), (1.0, "delayed")])
 
+    def test_request_explicit_reply(self) -> None:
+        sim = hs.Simulation()
+        Query = sim.register_message("Query")
+        Start = sim.register_message("Start")
+        server = hs.Actor(sim)
+        client = hs.Actor(sim)
+        got = {"value": None}
+
+        def on_query(actor, msg):
+            actor.reply({"echo": msg.id})
+
+        async def on_start(actor, _msg):
+            fut = server.request(Query, id=7)
+            got["value"] = await fut
+
+        server.on(Query, on_query)
+        client.on(Start, on_start)
+        server.start()
+        client.start()
+        client.send(Start)
+        sim.run()
+        server.check_error()
+        client.check_error()
+        self.assertEqual(got["value"], {"echo": 7})
+
+    def test_request_auto_empty_reply(self) -> None:
+        sim = hs.Simulation()
+        Query = sim.register_message("Query")
+        Start = sim.register_message("Start")
+        server = hs.Actor(sim)
+        client = hs.Actor(sim)
+        got = {"value": "unset"}
+
+        def on_query(_actor, _msg):
+            pass  # no reply
+
+        async def on_start(actor, _msg):
+            got["value"] = await server.request(Query, id=1)
+
+        server.on(Query, on_query)
+        client.on(Start, on_start)
+        server.start()
+        client.start()
+        client.send(Start)
+        sim.run()
+        client.check_error()
+        self.assertIsNone(got["value"])
+
+    def test_request_at(self) -> None:
+        sim = hs.Simulation()
+        Query = sim.register_message("Query")
+        Start = sim.register_message("Start")
+        server = hs.Actor(sim)
+        client = hs.Actor(sim)
+        got = {"at": -1.0, "value": None}
+
+        def on_query(actor, msg):
+            actor.reply(msg.id * 2)
+
+        async def on_start(actor, _msg):
+            fut = server.request_at(1.5, Query, id=4)
+            got["value"] = await fut
+            got["at"] = sim.now()
+
+        server.on(Query, on_query)
+        client.on(Start, on_start)
+        server.start()
+        client.start()
+        client.send(Start)
+        sim.run()
+        client.check_error()
+        self.assertEqual(got["value"], 8)
+        self.assertEqual(got["at"], 1.5)
+
+    def test_send_and_request_delay(self) -> None:
+        sim = hs.Simulation()
+        Set = sim.register_message("Set")
+        Query = sim.register_message("Query")
+        Start = sim.register_message("Start")
+        server = hs.Actor(sim)
+        client = hs.Actor(sim)
+        events: list[tuple[float, str]] = []
+
+        def on_set(_actor, msg):
+            events.append((sim.now(), f"set:{msg.value}"))
+
+        def on_query(actor, msg):
+            events.append((sim.now(), f"query:{msg.id}"))
+            actor.reply({"id": msg.id})
+
+        async def on_start(actor, _msg):
+            server.send(Set, delay=1.0, value=1)
+            reply = await server.request(Query, delay=2.0, id=9)
+            events.append((sim.now(), f"client_done:{reply['id']}"))
+
+        server.on(Set, on_set)
+        server.on(Query, on_query)
+        client.on(Start, on_start)
+        server.start()
+        client.start()
+        client.send(Start)
+        sim.run()
+        client.check_error()
+        server.check_error()
+        self.assertEqual(
+            events,
+            [(1.0, "set:1"), (2.0, "query:9"), (2.0, "client_done:9")],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -89,6 +89,39 @@ cmake --build build
 | `HYBRIDSIM_BUILD_TESTS` | ON | 注册 CTest 测试 |
 | `HYBRIDSIM_BUILD_EXAMPLES` | ON | 构建示例程序 |
 
+## Actor request / reply（同步请求-响应）
+
+在保留 `send` / `on` 的前提下，可用 `request` 等待对方处理结果（DES 协程挂起，非线程阻塞）。
+
+**C++**
+
+```cpp
+// 发送方（async handler 内）；delay 默认 0（立即投递）
+target.send(SetMsg{1}, /*delay=*/1.0);
+auto ev = target.request<Result>(QueryMsg{...}, /*delay=*/2.0);
+Result r = co_await ev;
+
+// 接收方（on 不变；可选 reply，否则 handler 结束自动空回复）
+b.on<QueryMsg>([](actor &self, QueryMsg &msg) {
+  self.reply(*self.current_request(), Result{...});
+});
+```
+
+**Python**
+
+```python
+# 接收方：普通 def 即可
+@on(QueryMsg)
+def handle_query(self, _actor, msg):
+    self.reply({"echo": msg.id})  # 或不调用 → 自动 None
+
+# 发送方：须 async def 才能 await；delay 默认 0
+@on(StartMsg)
+async def handle_start(self, _actor, _msg):
+    worker.send(SetMsg, delay=1.0, value=1)
+    result = await self.request(worker, QueryMsg, delay=2.0, id=1)
+```
+
 ## Python 平台使用
 
 ```python
