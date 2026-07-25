@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""NO_NETWORK monolithic inference demo: request → step → workload → finish."""
+"""NO_NETWORK inference demo: schedule + optional remote KV pull."""
 
 from __future__ import annotations
 
@@ -16,8 +16,15 @@ def main() -> None:
         step_interval=1e-3,
         dummy_exec_s=0.02,
         tokens_per_step=8,
+        max_num_scheduled_tokens=64,
+        enable_kv_client=True,
+        kv_transfer_s=0.015,
     )
     infra = build_inference_simulation(cfg)
+
+    shared_prompt = [100, 101, 102, 103, 104, 105, 106, 107]
+    assert infra.kv_store is not None
+    infra.kv_store.seed(shared_prompt)
 
     requests = [
         InferenceRequest(
@@ -29,8 +36,9 @@ def main() -> None:
         InferenceRequest(
             request_id=2,
             arrived_at=0.01,
-            num_prefill_tokens=8,
+            num_prefill_tokens=len(shared_prompt),
             num_decode_tokens=4,
+            prompt_token_ids=list(shared_prompt),
         ),
         InferenceRequest(
             request_id=3,
@@ -44,16 +52,16 @@ def main() -> None:
     infra.check_errors()
 
     finished = infra.finished_requests
-    print(f"arrived={infra.cluster.arrived_count} finished={len(finished)} now={infra.now:.4f}")
+    print(
+        f"arrived={infra.cluster.arrived_count} finished={len(finished)} now={infra.now:.4f}"
+    )
     for req in finished:
         print(
             f"  req={req.request_id} computed={req.num_computed_tokens}/"
             f"{req.num_tokens_with_output} completed={req.completed}"
         )
     if len(finished) != len(requests):
-        raise SystemExit(
-            f"expected {len(requests)} finished, got {len(finished)}"
-        )
+        raise SystemExit(f"expected {len(requests)} finished, got {len(finished)}")
 
 
 if __name__ == "__main__":

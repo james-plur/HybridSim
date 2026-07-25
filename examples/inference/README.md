@@ -1,7 +1,8 @@
 # Inference simulation examples (hybridsim_infer)
 
-Native Actor-based inference skeleton on hybridsim. Corresponds to
-`hybridsimdesign/基于actor系统的推理仿真设计.md`, **NO_NETWORK** phase.
+Native Actor-based inference on hybridsim. Corresponds to
+`hybridsimdesign/基于actor系统的推理仿真设计.md` and
+`hybridsimdesign/hybridsim inference offline校准.md` (**NO_NETWORK**).
 
 ## Layout vs design doc
 
@@ -9,44 +10,35 @@ Native Actor-based inference skeleton on hybridsim. Corresponds to
 |--------|---------|
 | ClusterSchedulerActor | `hybridsim_infer.actors.ClusterSchedulerActor` |
 | ReplicaSchedulerActor | `hybridsim_infer.actors.ReplicaSchedulerActor` |
-| WorkerEngine | `hybridsim_infer.actors.WorkerEngine` (wraps `EngineActor`) |
-| Request / Msg types | `hybridsim_infer.request`, `hybridsim_infer.messages` |
-| KvCacheManager | `hybridsim_infer.kv_cache` (stub) |
-| `dispatch` / wait / running / `batch` / workload | `hybridsim_infer.stubs` (dummy + `# TODO`) |
-| Topology assembly | `hybridsim_infer.builder.build_inference_simulation` |
+| WorkerEngine | `hybridsim_infer.actors.WorkerEngine` |
+| KV Store / KV Client | `KvStoreActor` + `KvClientEngine`（`enable_kv_client=True`） |
+| schedule / batch | `hybridsim_infer.frameworks`（默认 `VllmFramework`；`FrameworkFactory` 可扩展） |
+| Fake GPU duration | `hybridsim_infer.predictors`（`fixed` / `token_proportional`） |
 
-**Not in this phase:** Network actor, live KV Store/Client path (stub actors exist but are not wired), Frontier estimator / multi-kernel DAG.
+## Schedule alignment（测试）
 
-## Run
+调度对齐套件在 **[`tests/schedule_alignment/`](../../tests/schedule_alignment/)**（不是 example）。
 
-From the hybridsim repo root (after `pip install -e .`):
+文档：[schedule_alignment.md](../../tests/schedule_alignment/schedule_alignment.md) · 单元测试：`tests/test_schedule_alignment.py`
+
+```bash
+HF_HUB_OFFLINE=1 VLLM_TARGET_DEVICE=cpu PYTHONPATH=src/python:tests:. \
+  python tests/test_schedule_alignment.py -v
+```
+
+## Run demo / tests
 
 ```bash
 python examples/inference/monolithic_demo.py
-python -m unittest tests.test_inference_skeleton
+PYTHONPATH=src/python:. python tests/test_inference_skeleton.py -v
+HF_HUB_OFFLINE=1 VLLM_TARGET_DEVICE=cpu PYTHONPATH=src/python:tests:. \
+  python tests/test_schedule_alignment.py -v
 ```
 
-## Minimal API
+`InferenceConfig(duration_mode="token_proportional")` 时 batch 时长 ∝ prefill/decode token 数。
 
-```python
-from hybridsim_infer import InferenceConfig, InferenceRequest, build_inference_simulation
+`InferenceConfig(framework="vllm")` 选择 replica 内调度实现；扩展时实现 `InferenceFramework` 子类并 `FrameworkFactory.register("sglang", …)`。
 
-sim = build_inference_simulation(InferenceConfig(num_replicas=1, step_interval=0.001))
-sim.schedule_arrivals([
-    InferenceRequest(request_id=1, arrived_at=0.0, num_prefill_tokens=16, num_decode_tokens=8),
-])
-sim.run()
-assert len(sim.finished_requests) == 1
-```
+## Relation to Frontier
 
-## Step loop
-
-`ReplicaSchedulerActor` kicks `StepMsg` on start / new request / batch end.
-After each step it reschedules with `delay=step_interval` while there is work;
-when waiting/running/inflight are empty it stops (no zero-time busy loop).
-
-## Relation to Frontier examples
-
-`examples/frontier` remains the Frontier-aligned reference. This package does
-**not** import Frontier; replace stub bodies when wiring real schedule logic
-(see also `hybridsimdesign/vLLM Engine schedule 逐行注释分析.md`).
+`examples/frontier` 仍是 Frontier 对齐参考；本包不依赖 Frontier。
