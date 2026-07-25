@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from typing import Any, Optional
 
 from hybridsim_infer.frameworks.base import InferenceFramework, RemoteLookupFn
@@ -149,7 +150,7 @@ class VllmFramework(InferenceFramework):
             token_budget,
         )
 
-    def process_wait_queue(
+    async def process_wait_queue(
         self,
         waiting: list[InferenceRequest],
         running: list[InferenceRequest],
@@ -215,6 +216,12 @@ class VllmFramework(InferenceFramework):
                 and request.num_computed_tokens < request.num_prefill_tokens
             ):
                 lookup = remote_lookup(request)
+                if inspect.isawaitable(lookup):
+                    lookup = await lookup
+                if lookup.get("pending"):
+                    # Async lookup in flight (≈ vLLM ext_tokens is None): skip, continue.
+                    still_waiting.append(request)
+                    continue
                 hit_n = int(lookup.get("num_tokens", 0)) if lookup.get("hit") else 0
                 if hit_n > request.num_computed_tokens:
                     gain = hit_n - request.num_computed_tokens
@@ -335,7 +342,7 @@ class VllmFramework(InferenceFramework):
             req_to_new_blocks=dict(req_to_blocks),
         )
 
-    def schedule_step(
+    async def schedule_step(
         self,
         waiting: list[InferenceRequest],
         running: list[InferenceRequest],
@@ -384,7 +391,7 @@ class VllmFramework(InferenceFramework):
                 finished_cached,
                 budget,
                 stop_after_remote,
-            ) = self.process_wait_queue(
+            ) = await self.process_wait_queue(
                 waiting,
                 running,
                 kv_cache_manager=kv_cache_manager,

@@ -9,3 +9,4 @@ outputs/
 dist/
 src/python/hybridsim_py*.so
 src/python/hybridsim_py*.pyd
+tests/mooncake_alignment/_out/

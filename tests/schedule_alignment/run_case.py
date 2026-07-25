@@ -18,9 +18,7 @@ for _p in (_TESTS, _REPO, _PY):
 
 from schedule_alignment.case_loader import list_cases, load_case
 from schedule_alignment.compare import compare_ledgers
-from schedule_alignment.hybridsim_schedule_driver import (
-    run_hybridsim_schedule_sync,
-)
+from schedule_alignment.hybridsim_schedule_driver import run_hybridsim_schedule
 from schedule_alignment.schema import write_ledger
 from schedule_alignment.vllm_schedule_driver import (
     ensure_vllm_path,
@@ -69,7 +67,7 @@ def main(argv: list[str] | None = None) -> int:
     out_dir = args.out_dir or (Path(__file__).resolve().parent / "cases")
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    hs_records = run_hybridsim_schedule_sync(case)
+    hs_records = run_hybridsim_schedule(case)
     hs_path = out_dir / f"{case.name}.hybridsim.ledger.jsonl"
     write_ledger(hs_path, hs_records)
     print(f"wrote {hs_path} ({len(hs_records)} steps)")

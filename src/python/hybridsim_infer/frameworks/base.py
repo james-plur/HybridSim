@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional, Union
 
 from hybridsim_infer.request import InferenceRequest
 from hybridsim_infer.stubs import ScheduleResult
 
-# Sync remote lookup: (request) -> {"hit": bool, "num_tokens": int}
-RemoteLookupFn = Callable[[InferenceRequest], dict[str, Any]]
+# Sync or async remote lookup: (request) -> {"hit": bool, "num_tokens": int}
+RemoteLookupFn = Callable[
+    [InferenceRequest],
+    Union[dict[str, Any], Awaitable[dict[str, Any]]],
+]
 
 
 class InferenceFramework(ABC):
@@ -18,7 +21,7 @@ class InferenceFramework(ABC):
     name: str = "base"
 
     @abstractmethod
-    def schedule_step(
+    async def schedule_step(
         self,
         waiting: list[InferenceRequest],
         running: list[InferenceRequest],
@@ -30,7 +33,6 @@ class InferenceFramework(ABC):
         remote_lookup: Optional[RemoteLookupFn] = None,
     ) -> ScheduleResult:
         """One schedule tick: update queues and optionally emit a batch."""
-
     @abstractmethod
     def on_batch_complete(
         self,

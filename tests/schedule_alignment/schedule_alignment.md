@@ -33,7 +33,7 @@
 |------|-----------|------------------------|
 | 调度实现 | [`VllmFramework`](../../../src/python/hybridsim_infer/frameworks/vllm.py) | `vllm.v1.core.sched.scheduler.Scheduler` |
 | 工厂入口 | [`FrameworkFactory`](../../../src/python/hybridsim_infer/frameworks/factory.py) | （真实库，driver 直接构造） |
-| KV 容量 | [`KvCacheManager`](../../../src/python/hybridsim_infer/kv_cache.py) | `KVCacheManager.allocate_slots` + `BlockPool` |
+| KV 容量 | [`VllmKvCacheManager`](../../../src/python/hybridsim_infer/kv_system/cache.py) | `KVCacheManager.allocate_slots` + `BlockPool` |
 | 假执行 | `on_batch_complete` 推进 computed/output | `ModelRunnerOutput` 采样，不跑模型 |
 | 仿真 Actor 路径 | `ReplicaSchedulerActor` → `framework.schedule_step` | 不对齐 DES，仅校准 schedule |
 
@@ -239,7 +239,7 @@ CLI：`PYTHONPATH=src/python:tests:. python -m schedule_alignment.run_case --cas
 
 1. [`frameworks/base.py`](../../src/python/hybridsim_infer/frameworks/base.py) — 扩展点  
 2. [`frameworks/vllm.py`](../../src/python/hybridsim_infer/frameworks/vllm.py) — 对齐核心  
-3. [`kv_cache.py`](../../src/python/hybridsim_infer/kv_cache.py) — null block / allocate / can_fit  
+3. [`kv_system/cache.py`](../../src/python/hybridsim_infer/kv_system/cache.py) — null block / allocate / can_fit  
 4. [`request.py`](../../src/python/hybridsim_infer/request.py) — `num_tokens` / `num_output_tokens`  
 5. [`actors/replica_scheduler.py`](../../src/python/hybridsim_infer/actors/replica_scheduler.py) — DES 里如何调用 framework  
 6. [`hybridsim_schedule_driver.py`](hybridsim_schedule_driver.py) + [`vllm_schedule_driver.py`](vllm_schedule_driver.py) — 双端 ledger  
@@ -251,7 +251,7 @@ CLI：`PYTHONPATH=src/python:tests:. python -m schedule_alignment.run_case --cas
 
 ## 6. 已知差距（有意不声称对齐）
 
-- **APC / block hash**：HS 前缀是 token-list；默认关闭以免误对齐  
+- **APC / Store block hash**：本地 6 case 默认不启 Store；Mooncake 池 profile 与 vLLM 兼容 hash 见 `tests/mooncake_alignment/`  
 - **Spec decode / LoRA / encoder budget / watermark>0**：未建模  
 - **`num_computed` vs `num_tokens`**：HS 用 `computed`+`output` 近似；finished 条件用 `computed >= prefill+decode`  
 - **Cluster 负载均衡、真实执行时长**：不在本校准范围；时长可用 `TokenProportionalPredictor` 假执行  

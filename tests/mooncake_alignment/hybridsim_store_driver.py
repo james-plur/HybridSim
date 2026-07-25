@@ -1,30 +1,47 @@
-"""Offline hybridsim schedule driver: call framework.schedule_step in a loop."""
+"""Offline hybridsim driver: schedule ledger + Mooncake Store pool profile."""
 
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from pathlib import Path
+from typing import Any, Optional
 
 from hybridsim_infer.frameworks import FrameworkFactory
-from hybridsim_infer.kv_system import VllmKvCacheManager
+from hybridsim_infer.kv_system import MooncakeKvStore, VllmKvCacheManager, block_keys_from_tokens
 from hybridsim_infer.request import InferenceRequest, RequestStatus
 
-from .case_loader import CaseSpec
-from .schema import ScheduleStepRecord, normalize_req_id
+from schedule_alignment.case_loader import CaseSpec
+from schedule_alignment.schema import ScheduleStepRecord, normalize_req_id
+
+from .pool_recorder import events as pool_events
+from .pool_recorder import record as pool_record
+from .pool_recorder import reset as pool_reset
+from .pool_recorder import set_step as pool_set_step
+from .schema import MooncakePoolEvent, write_pool_profile
+
+
+def _pool_profile(op: str, **kwargs: Any) -> None:
+    """Adapt ``MooncakeKvStore._emit`` kwargs to ``pool_recorder.record``."""
+    pool_record(
+        op,
+        hashes=kwargs.get("hashes") or kwargs.get("keys") or [],
+        keys=kwargs.get("keys") or [],
+        hit_mask=kwargs.get("hit_mask") or [],
+        num_tokens=int(kwargs.get("num_tokens") or 0),
+        req_id=str(kwargs.get("req_id") or ""),
+        step=kwargs.get("step"),
+        block_ids=kwargs.get("block_ids") or [],
+    )
 
 
 def _sched_cfg(case: CaseSpec) -> dict[str, Any]:
     s = case.scheduler
     max_running = int(s.get("max_num_running_reqs", 32))
     max_tokens = int(s.get("max_num_scheduled_tokens", 64))
-    # vLLM requires max_num_batched_tokens >= max_num_seqs.
     if max_tokens < max_running:
         max_tokens = max_running
     return {
-        "framework": str(
-            getattr(case, "framework", None)
-            or s.get("framework", "vllm")
-        ),
+        "framework": str(getattr(case, "framework", None) or s.get("framework", "vllm")),
         "max_num_scheduled_tokens": max_tokens,
         "max_num_running_reqs": max_running,
         "tokens_per_step": int(s.get("tokens_per_step", 8)),
@@ -34,6 +51,9 @@ def _sched_cfg(case: CaseSpec) -> dict[str, Any]:
         "block_size": int(s.get("block_size", 16)),
         "reserve_full_isl": bool(s.get("reserve_full_isl", True)),
         "enable_prefix_caching": bool(s.get("enable_prefix_caching", False)),
+        "enable_remote_store": bool(s.get("enable_remote_store", True)),
+        # Offline Mooncake pool capacity (blocks). Small values force LRU evict.
+        "store_num_blocks": int(s.get("store_num_blocks", 4096)),
     }
 
 
@@ -53,12 +73,11 @@ def _make_request(spec) -> InferenceRequest:
     )
 
 
-def run_hybridsim_schedule(case: CaseSpec) -> list[ScheduleStepRecord]:
-    return asyncio.run(_run_hybridsim_schedule_async(case))
-
-
-async def _run_hybridsim_schedule_async(case: CaseSpec) -> list[ScheduleStepRecord]:
+async def _run_async(
+    case: CaseSpec,
+) -> tuple[list[ScheduleStepRecord], list[MooncakePoolEvent]]:
     cfg = _sched_cfg(case)
+    pool_reset()
     framework = FrameworkFactory.create(
         cfg["framework"],
         tokens_per_step=cfg["tokens_per_step"],
@@ -74,17 +93,37 @@ async def _run_hybridsim_schedule_async(case: CaseSpec) -> list[ScheduleStepReco
     for prefix in case.seed_prefix_cache:
         kv.cache_prefix(list(prefix))
 
+    step_box = {"step": 0}
+    # Same engine as DES ``KvStoreActor.store`` — not a test-only mirror.
+    pool = MooncakeKvStore(
+        num_blocks=cfg["store_num_blocks"],
+        block_size=cfg["block_size"],
+        profile_fn=_pool_profile,
+        profile_step_fn=lambda: step_box["step"],
+    )
+
+    def remote_lookup(request: InferenceRequest) -> dict[str, Any]:
+        if not cfg["enable_remote_store"]:
+            return {"hit": False, "num_tokens": 0}
+        keys = block_keys_from_tokens(request.prompt_token_ids, cfg["block_size"])
+        result = pool.lookup_keys(keys, req_id=str(request.request_id))
+        return {
+            "hit": bool(result.get("hit")),
+            "num_tokens": int(result.get("num_tokens", 0)),
+        }
+
     pending = sorted(case.requests, key=lambda r: (r.arrive_step, r.request_id))
     id_map: dict[int, str] = {}
     waiting: list[InferenceRequest] = []
     running: list[InferenceRequest] = []
-    finished: list[InferenceRequest] = []
     records: list[ScheduleStepRecord] = []
     batch_id = 1
     pending_idx = 0
     idle_streak = 0
 
     for step in range(case.max_steps):
+        step_box["step"] = step
+        pool_set_step(step)
         while pending_idx < len(pending) and pending[pending_idx].arrive_step <= step:
             spec = pending[pending_idx]
             pending_idx += 1
@@ -102,7 +141,7 @@ async def _run_hybridsim_schedule_async(case: CaseSpec) -> list[ScheduleStepReco
             batch_id=batch_id,
             token_budget=cfg["max_num_scheduled_tokens"],
             max_num_running_reqs=cfg["max_num_running_reqs"],
-            remote_lookup=None,
+            remote_lookup=remote_lookup if cfg["enable_remote_store"] else None,
         )
         waiting = result.waiting
         running = result.running
@@ -123,8 +162,6 @@ async def _run_hybridsim_schedule_async(case: CaseSpec) -> list[ScheduleStepReco
         finished_ids = [
             id_map.get(r.request_id, str(r.request_id)) for r in result.finished_cached
         ]
-        for r in result.finished_cached:
-            finished.append(r)
 
         if result.batch is not None:
             done_now = framework.on_batch_complete(
@@ -132,12 +169,34 @@ async def _run_hybridsim_schedule_async(case: CaseSpec) -> list[ScheduleStepReco
                 result.batch.tokens_per_request,
                 kv,
             )
+            for req in result.batch.requests:
+                prefix = list(req.prompt_token_ids[: req.num_computed_tokens])
+                keys = block_keys_from_tokens(prefix, cfg["block_size"])
+                if keys:
+                    pool.insert_keys(keys, req_id=str(req.request_id))
             if done_now:
                 done_ids = {r.request_id for r in done_now}
                 running = [r for r in running if r.request_id not in done_ids]
-                finished.extend(done_now)
                 finished_ids.extend(
                     id_map.get(r.request_id, str(r.request_id)) for r in done_now
+                )
+
+        for pull in result.remote_pulls:
+            req = pull.request
+            if req.status == RequestStatus.WAIT_FOR_REMOTE_KVS:
+                req.num_computed_tokens = max(
+                    req.num_computed_tokens, req.pending_remote_tokens
+                )
+                req.pending_remote_tokens = 0
+                req.status = RequestStatus.WAITING
+                keys = block_keys_from_tokens(
+                    req.prompt_token_ids[: req.num_computed_tokens],
+                    cfg["block_size"],
+                )
+                pool.get_keys(
+                    keys,
+                    req_id=str(req.request_id),
+                    num_tokens=pull.num_tokens,
                 )
 
         records.append(
@@ -158,6 +217,7 @@ async def _run_hybridsim_schedule_async(case: CaseSpec) -> list[ScheduleStepReco
 
         progressed = bool(
             scheduled or preempted_ids or finished_ids or result.finished_cached
+            or result.remote_pulls
         )
         arrived_now = any(p.arrive_step == step for p in case.requests)
         if progressed or arrived_now:
@@ -170,4 +230,20 @@ async def _run_hybridsim_schedule_async(case: CaseSpec) -> list[ScheduleStepReco
         if not waiting and not running and pending_idx >= len(pending):
             break
 
-    return records
+    return records, pool_events()
+
+
+def run_hybridsim_store_case(
+    case: CaseSpec,
+    *,
+    schedule_out: Optional[Path] = None,
+    pool_out: Optional[Path] = None,
+) -> tuple[list[ScheduleStepRecord], list[MooncakePoolEvent]]:
+    records, events = asyncio.run(_run_async(case))
+    if schedule_out is not None:
+        from schedule_alignment.schema import write_ledger
+
+        write_ledger(Path(schedule_out), records)
+    if pool_out is not None:
+        write_pool_profile(Path(pool_out), events)
+    return records, events

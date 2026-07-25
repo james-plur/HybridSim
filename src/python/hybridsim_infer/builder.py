@@ -12,7 +12,7 @@ from hybridsim_infer.actors.kv_store import KvStoreActor
 from hybridsim_infer.actors.replica_scheduler import ReplicaSchedulerActor
 from hybridsim_infer.config import InferenceConfig
 from hybridsim_infer.frameworks import FrameworkFactory
-from hybridsim_infer.kv_cache import KvCacheManager
+from hybridsim_infer.kv_system import VllmKvCacheManager
 from hybridsim_infer.messages import INFER_MESSAGE_TYPES
 from hybridsim_infer.request import InferenceRequest
 
@@ -48,17 +48,26 @@ class InferenceSimulation:
 def build_inference_simulation(
     config: InferenceConfig | None = None,
 ) -> InferenceSimulation:
-    """Build Cluster + N Replica(+WorkerEngine); optionally KvStore + KvClientEngine."""
+    """Build Cluster + N Replica(+WorkerEngine); optionally KvStore + KvClient."""
     if config is None:
         config = InferenceConfig()
+
+    if config.kv_mode == "p2p" and int(config.num_replicas) < 2:
+        raise ValueError("kv_mode=p2p requires num_replicas >= 2")
 
     sim = Simulation(config)
     sim.register_messages(list(INFER_MESSAGE_TYPES))
 
-    cluster = sim.spawn_actor(ClusterSchedulerActor)
+    cluster = sim.spawn_actor(
+        ClusterSchedulerActor,
+        kv_mode=config.kv_mode,
+        kv_p2p_prefill_replica=config.kv_p2p_prefill_replica,
+        kv_p2p_decode_replica=config.kv_p2p_decode_replica,
+    )
 
     kv_store: Optional[KvStoreActor] = None
-    if config.enable_kv_client:
+    # Store master only for store mode (P2P uses local fixed-address lookup).
+    if config.enable_kv_client and config.kv_mode == "store":
         kv_store = sim.spawn_actor(
             KvStoreActor,
             num_blocks=config.kv_store_blocks,
@@ -68,11 +77,12 @@ def build_inference_simulation(
     replicas: list[ReplicaSchedulerActor] = []
     for rid in range(int(config.num_replicas)):
         engine = sim.create_engine_actor()
-        kv = KvCacheManager(
+        kv = VllmKvCacheManager(
             num_gpu_blocks=config.num_gpu_blocks,
             block_size=config.block_size,
         )
-        kv_engine = sim.create_engine_actor() if config.enable_kv_client else None
+        need_kv_engine = bool(config.enable_kv_client)
+        kv_engine = sim.create_engine_actor() if need_kv_engine else None
         framework = FrameworkFactory.create(
             config.framework,
             tokens_per_step=config.tokens_per_step,
@@ -93,6 +103,12 @@ def build_inference_simulation(
             step_interval=config.step_interval,
             dummy_exec_s=config.dummy_exec_s,
             kv_transfer_s=config.kv_transfer_s,
+            kv_bandwidth_gbps=config.kv_bandwidth_gbps,
+            kv_bytes_per_token=config.kv_bytes_per_token,
+            kv_mode=config.kv_mode,
+            kv_lookup_async=config.kv_lookup_async,
+            kv_lookup_rtt_s=config.kv_lookup_rtt_s,
+            kv_p2p_location=config.kv_p2p_decode_replica,
             max_num_scheduled_tokens=config.max_num_scheduled_tokens,
             max_num_running_reqs=config.max_num_running_reqs,
             duration_mode=config.duration_mode,

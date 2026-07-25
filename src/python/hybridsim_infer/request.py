@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum, auto
+from typing import Optional
 
 
 class RequestStatus(Enum):
@@ -29,6 +30,12 @@ class InferenceRequest:
     completed: bool = False
     #: Tokens expected from an in-flight remote KV pull.
     pending_remote_tokens: int = 0
+    #: Mooncake-style transfer params (``do_remote_prefill`` / ``do_remote_decode`` / …).
+    kv_transfer_params: Optional[dict] = None
+    #: Store async lookup in flight (request stays WAITING).
+    pending_lookup: bool = False
+    #: Cached async lookup result; consumed by the next ``remote_lookup``.
+    lookup_result: Optional[dict] = None
 
     def __post_init__(self) -> None:
         if not self.prompt_token_ids and self.num_prefill_tokens > 0:

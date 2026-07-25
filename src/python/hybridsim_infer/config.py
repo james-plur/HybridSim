@@ -39,9 +39,23 @@ class InferenceConfig(SimulationConfig):
     framework: str = "vllm"
     num_gpu_blocks: int = 1024
     block_size: int = 16
-    #: Wire KvStore + KvClientEngine into the topology.
+    #: Wire KvClient (per replica) + shared KvStoreActor master.
     enable_kv_client: bool = False
-    #: Dummy KV transfer TimeoutKernel duration (seconds).
-    kv_transfer_s: float = 0.01
+    #: Floor on KV transfer TimeoutKernel duration (seconds).
+    kv_transfer_s: float = 1e-4
+    #: Simulated interconnect bandwidth for KV pull/push duration.
+    kv_bandwidth_gbps: float = 50.0
+    #: Bytes per token used when estimating transfer time.
+    kv_bytes_per_token: float = 16.0
     #: Remote KV store capacity in blocks.
     kv_store_blocks: int = 4096
+    #: ``store`` (MooncakeStore-style) or ``p2p`` (fixed-address lookup + Decode RDMA sim).
+    kv_mode: str = "store"
+    #: Fire-and-forget lookup + ReplyMsg (Store mode); pending ≈ vLLM ``None``.
+    kv_lookup_async: bool = False
+    #: Simulated lookup RTT before Store async reply (seconds).
+    kv_lookup_rtt_s: float = 1e-3
+    #: Prefill replica id when ``kv_mode=p2p``.
+    kv_p2p_prefill_replica: int = 0
+    #: Decode replica id when ``kv_mode=p2p`` (also used as fixed lookup location).
+    kv_p2p_decode_replica: int = 1
