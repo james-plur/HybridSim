@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Awaitable, Callable, Optional, Union
 
 from hybridsim_infer.request import InferenceRequest
-from hybridsim_infer.stubs import ScheduleResult
+from hybridsim_infer.schedule_types import ScheduleResult
 
 # Sync or async remote lookup: (request) -> {"hit": bool, "num_tokens": int}
 RemoteLookupFn = Callable[

@@ -1,6 +1,6 @@
-"""Shared schedule DTOs, cluster dispatch, and workload helpers.
+"""Schedule DTOs and cluster dispatch helpers.
 
-vLLM Phase1/2 schedule lives in ``hybridsim_infer.frameworks.VllmFramework``.
+Used by frameworks, actors, and workload_generators.
 """
 
 from __future__ import annotations
@@ -61,40 +61,3 @@ def dispatch(
     if not replica_loads:
         return 0
     return min(range(len(replica_loads)), key=lambda i: replica_loads[i])
-
-
-def inference_workload_generator(
-    schedule_batch: ScheduleBatch,
-    *,
-    workload_id: int,
-    duration_s: float,
-) -> dict[str, Any]:
-    """Turn a schedule batch into an EngineActor workload (single TimeoutKernel)."""
-    return {
-        "workload_id": workload_id,
-        "kernels": [
-            {
-                "name": f"batch_{schedule_batch.batch_id}",
-                "duration": duration_s,
-                "dependencies": [],
-            }
-        ],
-    }
-
-
-def kv_transfer_workload(
-    *,
-    workload_id: int,
-    request_id: int,
-    duration_s: float,
-) -> dict[str, Any]:
-    return {
-        "workload_id": workload_id,
-        "kernels": [
-            {
-                "name": f"kv_xfer_{request_id}",
-                "duration": duration_s,
-                "dependencies": [],
-            }
-        ],
-    }

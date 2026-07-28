@@ -18,9 +18,11 @@ from hybridsim_infer.messages import (
     RequestMsg,
     StepMsg,
 )
-from hybridsim_infer.predictors import make_predictor
 from hybridsim_infer.request import InferenceRequest, RequestStatus
-from hybridsim_infer.stubs import ScheduleBatch, inference_workload_generator
+from hybridsim_infer.workload_generators import (
+    WorkloadGenerator,
+    make_workload_generator,
+)
 
 
 class ReplicaSchedulerActor(ActorBase):
@@ -42,14 +44,13 @@ class ReplicaSchedulerActor(ActorBase):
         kv_transfer_s: float = 1e-4,
         kv_bandwidth_gbps: float = 50.0,
         kv_bytes_per_token: float = 16.0,
-        kv_mode: str = "store",
         kv_lookup_async: bool = False,
         kv_lookup_rtt_s: float = 1e-3,
-        kv_p2p_location: Any = 1,
         tokens_per_step: int = 8,
         decode_tokens_per_step: int = 1,
         max_num_scheduled_tokens: int = 64,
         max_num_running_reqs: int = 32,
+        max_inflight_batches: int = 1,
         long_prefill_token_threshold: int = 0,
         reserve_full_isl: bool = True,
         enable_prefix_caching: bool = False,
@@ -59,6 +60,7 @@ class ReplicaSchedulerActor(ActorBase):
         decode_s_per_token: float = 1e-3,
         duration_base_s: float = 0.0,
         duration_predictor: Any = None,
+        workload_generator: Optional[WorkloadGenerator] = None,
     ) -> None:
         self.replica_id = replica_id
         self._cluster = cluster
@@ -67,7 +69,6 @@ class ReplicaSchedulerActor(ActorBase):
         self._dummy_exec_s = float(dummy_exec_s)
         self._max_num_scheduled_tokens = int(max_num_scheduled_tokens)
         self._max_num_running_reqs = int(max_num_running_reqs)
-        self._kv_mode = str(kv_mode)
         self._kv: KvCacheManager = kv_cache_manager or VllmKvCacheManager()
         self._framework = framework or FrameworkFactory.create(
             framework_name,
@@ -77,12 +78,16 @@ class ReplicaSchedulerActor(ActorBase):
             reserve_full_isl=reserve_full_isl,
             enable_prefix_caching=enable_prefix_caching,
         )
-        self._duration_predictor = duration_predictor or make_predictor(
-            duration_mode=duration_mode,
-            dummy_exec_s=dummy_exec_s,
-            prefill_s_per_token=prefill_s_per_token,
-            decode_s_per_token=decode_s_per_token,
-            base_s=duration_base_s,
+        self._workload_generator: WorkloadGenerator = (
+            workload_generator
+            or make_workload_generator(
+                duration_mode=duration_mode,
+                dummy_exec_s=dummy_exec_s,
+                prefill_s_per_token=prefill_s_per_token,
+                decode_s_per_token=decode_s_per_token,
+                duration_base_s=duration_base_s,
+                predictor=duration_predictor,
+            )
         )
 
         self.waiting: list[InferenceRequest] = []
@@ -90,16 +95,18 @@ class ReplicaSchedulerActor(ActorBase):
         self._next_batch_id = 1
         self._next_workload_id = 1
         self._step_armed = False
-        self._inflight_batch: Optional[ScheduleBatch] = None
 
         if engine is None:
             raise ValueError("ReplicaSchedulerActor requires an EngineActor")
-        self._worker = WorkerEngine(engine, on_batch_complete=self._on_worker_complete)
+        self._worker = WorkerEngine(
+            engine,
+            on_batch_complete=self._on_worker_complete,
+            max_inflight=max_inflight_batches,
+        )
 
-        # Store mode needs store+engine; P2P needs engine (store optional).
-        if kv_engine is not None and (
-            kv_store is not None or self._kv_mode == "p2p"
-        ):
+        # Homogeneous replicas: wire KvClient whenever a transfer engine is provided.
+        # Store is optional (monolith/PD prefix pool); PD Decode uses control-plane lookup.
+        if kv_engine is not None:
             client = KvClient(
                 self,
                 kv_store,
@@ -109,12 +116,10 @@ class ReplicaSchedulerActor(ActorBase):
                 bytes_per_token=kv_bytes_per_token,
                 transfer_s_floor=kv_transfer_s,
                 lookup_rtt_s=kv_lookup_rtt_s,
-                p2p_location=kv_p2p_location,
                 on_transfer_complete=self._on_kv_transfer_complete,
             )
             self._kv.attach_client(
                 client,
-                kv_mode=self._kv_mode,
                 kv_lookup_async=bool(kv_lookup_async),
             )
 
@@ -141,13 +146,12 @@ class ReplicaSchedulerActor(ActorBase):
         return bool(
             self.waiting
             or self.running
-            or self._worker.busy
-            or self._inflight_batch
+            or self._worker.num_inflight
             or self._kv.client_busy
         )
 
     def _on_worker_complete(
-        self, workload_id: int, schedule_batch: Optional[ScheduleBatch]
+        self, workload_id: int, schedule_batch: Optional[Any]
     ) -> None:
         self.send(BatchEndMsg, workload_id=workload_id, batch=schedule_batch)
 
@@ -157,8 +161,8 @@ class ReplicaSchedulerActor(ActorBase):
         self.send(KVTransferEndMsg, request_id=request_id, direction=direction)
 
     def _maybe_handoff_prefill(self, req: InferenceRequest) -> bool:
-        """If P2P prefill is done, hand off to Cluster (no RDMA push on P)."""
-        if self._kv_mode != "p2p" or self._cluster is None:
+        """If request asks for remote decode and Prefill is done, hand off to Cluster."""
+        if self._cluster is None:
             return False
         params = req.kv_transfer_params or {}
         if not params.get("do_remote_decode") or params.get("_handed_off"):
@@ -208,21 +212,30 @@ class ReplicaSchedulerActor(ActorBase):
     async def on_step(self, _actor, msg: StepMsg) -> None:
         self._step_armed = False
 
-        if not self._worker.busy and self._inflight_batch is None:
+        # One schedule step → at most one batch; gate on Worker inflight depth.
+        if self._worker.can_submit():
+            blocked = self._worker.inflight_request_ids()
+            waiting = [r for r in self.waiting if r.request_id not in blocked]
+            running_held = [r for r in self.running if r.request_id in blocked]
+            running_ready = [
+                r for r in self.running if r.request_id not in blocked
+            ]
+
             remote_lookup = (
                 self._kv.remote_lookup if self._kv.remote_enabled else None
             )
             result = await self._framework.schedule_step(
-                self.waiting,
-                self.running,
+                waiting,
+                running_ready,
                 kv_cache_manager=self._kv,
                 batch_id=self._next_batch_id,
                 token_budget=self._max_num_scheduled_tokens,
                 max_num_running_reqs=self._max_num_running_reqs,
                 remote_lookup=remote_lookup,
             )
+            # Preserve requests still executing on the Worker.
             self.waiting = result.waiting
-            self.running = result.running
+            self.running = running_held + result.running
 
             if result.finished_cached and self._cluster is not None:
                 for req in result.finished_cached:
@@ -239,13 +252,7 @@ class ReplicaSchedulerActor(ActorBase):
                 self._next_batch_id += 1
                 wid = self._next_workload_id
                 self._next_workload_id += 1
-                self._inflight_batch = result.batch
-                duration_s = float(self._duration_predictor.predict(result.batch))
-                workload = inference_workload_generator(
-                    result.batch,
-                    workload_id=wid,
-                    duration_s=duration_s,
-                )
+                workload = self._workload_generator(result.batch, workload_id=wid)
                 self._worker.submit(workload, result.batch)
 
         if self._has_work():
@@ -254,9 +261,10 @@ class ReplicaSchedulerActor(ActorBase):
 
     @on(BatchEndMsg)
     async def on_batch_end(self, _actor, msg: BatchEndMsg) -> None:
-        sched: Optional[ScheduleBatch] = msg.batch
-        self._inflight_batch = None
+        wid = int(msg.workload_id)
+        sched = msg.batch
         if sched is None:
+            self._worker.acknowledge(wid)
             self._arm_step()
             return
 
@@ -269,10 +277,9 @@ class ReplicaSchedulerActor(ActorBase):
         await self._kv.save_computed_prefixes(list(sched.requests))
 
         handed_off_ids: set[int] = set()
-        if self._kv_mode == "p2p":
-            for req in list(sched.requests):
-                if self._maybe_handoff_prefill(req):
-                    handed_off_ids.add(req.request_id)
+        for req in list(sched.requests):
+            if self._maybe_handoff_prefill(req):
+                handed_off_ids.add(req.request_id)
 
         if finished or handed_off_ids:
             drop_ids = {r.request_id for r in finished} | handed_off_ids
@@ -285,6 +292,8 @@ class ReplicaSchedulerActor(ActorBase):
                         RequestFinishMsg, request=req, replica_id=self.replica_id
                     )
 
+        # Release Worker slot only after state is advanced (async occupancy).
+        self._worker.acknowledge(wid)
         self._arm_step()
 
     @on(KVTransferEndMsg)

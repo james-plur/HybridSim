@@ -8,7 +8,7 @@
 1. **调度（Schedule）** — 与 [`../schedule_alignment/`](../schedule_alignment/) 共用 `ScheduleStepRecord`
 2. **Mooncake Store 池** — CRUD 事件 JSONL（`exist` / `put` / `get` / `evict`），含 `step`、`hashes`、可选 `keys`
 
-PD（`MooncakeConnector`）用 DES `kv_mode=p2p` 做 handoff smoke；**池 profile 仅针对 Store**。
+PD（`MooncakeConnector`）用 DES `cluster_type=pd` 做 handoff smoke；**池 profile 仅针对 Store**。
 
 ---
 
@@ -41,7 +41,7 @@ PD（`MooncakeConnector`）用 DES `kv_mode=p2p` 做 handoff smoke；**池 profi
 | Store 客户端 | connector / Mooncake client | `kv_system.KvClient` |
 | 传输时长仿真 | 真实 RDMA（本阶段不对齐数值） | `kv_system.KvClientEngine` → EngineActor |
 | Store Actor 外壳 | （进程外 master） | `actors.KvStoreActor`（只收 Msg） |
-| PD handoff | `MooncakeConnector` + proxy | Cluster `RequestHandoffMsg` + `kv_mode=p2p` |
+| PD handoff | `MooncakeConnector` + proxy | Cluster `RequestHandoffMsg` + `cluster_type=pd` |
 | Block hash | vLLM `hash_block_tokens` | `kv_system.block_keys`（同算法） |
 
 **关键约束**：offline [`hybridsim_store_driver`](hybridsim_store_driver.py) 与 DES `KvStoreActor` **调用同一套** `MooncakeKvStore.lookup_keys` / `insert_keys` / `get_keys`，避免测试替身与仿真分叉。
@@ -66,7 +66,7 @@ ReplicaSchedulerActor
 - Schema：`schedule_alignment.schema.ScheduleStepRecord`
 - 比对：`schedule_alignment.compare.compare_ledgers`
 - Store case：`remote_lookup` → `MooncakeKvStore.lookup_keys`；hit 后 `WAIT_FOR_REMOTE_KVS` + `get`，再减少剩余 prefill 的 `scheduled_tokens`
-- PD case：DES Prefill handoff → Decode `lookup_p2p` + RDMA 仿真；handoff 前可 `cache_prefix`（本地 prefix）
+- PD case：DES Prefill handoff → Decode control-plane lookup（跳过 Store hash）+ RDMA 仿真；handoff 前可 `cache_prefix`（本地 prefix）
 
 ### 轨道 B：Store 池 profile
 

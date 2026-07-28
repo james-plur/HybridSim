@@ -1,10 +1,10 @@
-"""Batch duration predictors for fake GPU execution."""
+"""Batch duration predictors used by timeout-kernel workload generators."""
 
 from __future__ import annotations
 
 from typing import Protocol
 
-from hybridsim_infer.stubs import DecodeChunk, PrefillChunk, ScheduleBatch
+from hybridsim_infer.schedule_types import DecodeChunk, PrefillChunk, ScheduleBatch
 
 
 class BatchDurationPredictor(Protocol):
@@ -43,7 +43,6 @@ class TokenProportionalPredictor:
             elif isinstance(chunk, DecodeChunk):
                 decode += int(chunk.num_tokens)
             else:
-                # Fallback: treat unknown as decode-ish
                 decode += int(getattr(chunk, "num_tokens", 0))
         if prefill == 0 and decode == 0:
             total = sum(int(v) for v in schedule_batch.tokens_per_request.values())

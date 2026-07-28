@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
-"""PD disaggregation demo (kv_mode=p2p) with local prefix caching.
+"""PD disaggregation demo (cluster_type=pd) with local prefix caching.
 
 Flow (per request):
-  Cluster → Prefill replica (do_remote_decode)
+  Cluster → Prefill pool (stamp do_remote_decode)
     → local schedule / optional prefix hit
     → handoff (RequestHandoffMsg)
-  → Decode replica (do_remote_prefill)
-    → lookup_p2p + RDMA pull sim (WAIT_FOR_REMOTE_KVS)
+  → Decode pool (stamp do_remote_prefill + remote_replica_id=source P)
+    → control-plane lookup (RTT, no Store hash match) + RDMA pull sim
     → decode → finish
 
-Prefix cache (``enable_prefix_caching=True``) lives on each replica's
-``VllmKvCacheManager``. A second request with the same prompt that again
-lands on Prefill can skip recomputing the shared prefix locally before handoff.
+Replicas are homogeneous: role is only implied by request stamps from the
+ClusterManager. Store may be enabled alongside PD (orthogonal).
 """
 
 from __future__ import annotations
@@ -34,11 +33,10 @@ def main() -> None:
     prompt_partial = shared_prefix + suffix_b  # shares first 16 tokens only
 
     cfg = InferenceConfig(
-        num_replicas=2,
+        cluster_type="pd",
+        num_prefill_replicas=1,
+        num_decode_replicas=1,
         enable_kv_client=True,
-        kv_mode="p2p",
-        kv_p2p_prefill_replica=0,
-        kv_p2p_decode_replica=1,
         enable_prefix_caching=True,
         block_size=block_size,
         num_gpu_blocks=256,
@@ -50,12 +48,13 @@ def main() -> None:
         kv_transfer_s=1e-4,
         kv_bandwidth_gbps=100.0,
         kv_bytes_per_token=16.0,
+        kv_lookup_rtt_s=1e-3,
         duration_mode="token_proportional",
         prefill_s_per_token=5e-5,
         decode_s_per_token=2e-4,
     )
     infra = build_inference_simulation(cfg)
-    assert infra.kv_store is None  # P2P has no Mooncake Store master
+    assert infra.kv_store is not None  # enable_kv_client wires shared Store
     assert len(infra.replicas) == 2
 
     requests = [
@@ -86,8 +85,8 @@ def main() -> None:
 
     print("=== PD disagg + prefix cache demo ===")
     print(
-        f"replicas=2 (P={cfg.kv_p2p_prefill_replica}, D={cfg.kv_p2p_decode_replica}) "
-        f"block_size={block_size} prefix_caching=on"
+        f"cluster_type=pd P={cfg.num_prefill_replicas} D={cfg.num_decode_replicas} "
+        f"block_size={block_size} prefix_caching=on store=on"
     )
     print(
         f"prompts: req1/2 full={len(prompt_full)} tok; "
@@ -111,6 +110,7 @@ def main() -> None:
             f"{req.num_tokens_with_output} completed={req.completed} "
             f"xfer={params.get('transfer_id', '')} "
             f"do_remote_prefill={bool(params.get('do_remote_prefill'))} "
+            f"src_P={params.get('remote_replica_id')} "
             f"handed_off={bool(params.get('_handed_off'))}"
         )
         if not req.completed:

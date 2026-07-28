@@ -10,6 +10,7 @@ from hybridsim import Simulation
 from hybridsim_infer.actors.cluster_scheduler import ClusterSchedulerActor
 from hybridsim_infer.actors.kv_store import KvStoreActor
 from hybridsim_infer.actors.replica_scheduler import ReplicaSchedulerActor
+from hybridsim_infer.cluster import MonolithClusterManager, PdClusterManager
 from hybridsim_infer.config import InferenceConfig
 from hybridsim_infer.frameworks import FrameworkFactory
 from hybridsim_infer.kv_system import VllmKvCacheManager
@@ -48,26 +49,31 @@ class InferenceSimulation:
 def build_inference_simulation(
     config: InferenceConfig | None = None,
 ) -> InferenceSimulation:
-    """Build Cluster + N Replica(+WorkerEngine); optionally KvStore + KvClient."""
+    """Build Cluster + N homogeneous Replica(+WorkerEngine); optional shared Store."""
     if config is None:
         config = InferenceConfig()
 
-    if config.kv_mode == "p2p" and int(config.num_replicas) < 2:
-        raise ValueError("kv_mode=p2p requires num_replicas >= 2")
+    cluster_type = config.resolved_cluster_type()
+    num_replicas = config.resolved_num_replicas()
+    if cluster_type == "pd" and num_replicas < 2:
+        raise ValueError("cluster_type=pd requires at least 1 Prefill + 1 Decode replica")
+
+    if cluster_type == "pd":
+        prefill_ids, decode_ids = config.pd_pools()
+        manager = PdClusterManager(
+            prefill_replica_ids=prefill_ids,
+            decode_replica_ids=decode_ids,
+        )
+    else:
+        manager = MonolithClusterManager()
 
     sim = Simulation(config)
     sim.register_messages(list(INFER_MESSAGE_TYPES))
 
-    cluster = sim.spawn_actor(
-        ClusterSchedulerActor,
-        kv_mode=config.kv_mode,
-        kv_p2p_prefill_replica=config.kv_p2p_prefill_replica,
-        kv_p2p_decode_replica=config.kv_p2p_decode_replica,
-    )
+    cluster = sim.spawn_actor(ClusterSchedulerActor, manager=manager)
 
     kv_store: Optional[KvStoreActor] = None
-    # Store master only for store mode (P2P uses local fixed-address lookup).
-    if config.enable_kv_client and config.kv_mode == "store":
+    if config.enable_kv_client:
         kv_store = sim.spawn_actor(
             KvStoreActor,
             num_blocks=config.kv_store_blocks,
@@ -75,14 +81,15 @@ def build_inference_simulation(
         )
 
     replicas: list[ReplicaSchedulerActor] = []
-    for rid in range(int(config.num_replicas)):
+    for rid in range(num_replicas):
         engine = sim.create_engine_actor()
         kv = VllmKvCacheManager(
             num_gpu_blocks=config.num_gpu_blocks,
             block_size=config.block_size,
         )
-        need_kv_engine = bool(config.enable_kv_client)
-        kv_engine = sim.create_engine_actor() if need_kv_engine else None
+        kv_engine = (
+            sim.create_engine_actor() if config.enable_kv_client else None
+        )
         framework = FrameworkFactory.create(
             config.framework,
             tokens_per_step=config.tokens_per_step,
@@ -105,12 +112,11 @@ def build_inference_simulation(
             kv_transfer_s=config.kv_transfer_s,
             kv_bandwidth_gbps=config.kv_bandwidth_gbps,
             kv_bytes_per_token=config.kv_bytes_per_token,
-            kv_mode=config.kv_mode,
             kv_lookup_async=config.kv_lookup_async,
             kv_lookup_rtt_s=config.kv_lookup_rtt_s,
-            kv_p2p_location=config.kv_p2p_decode_replica,
             max_num_scheduled_tokens=config.max_num_scheduled_tokens,
             max_num_running_reqs=config.max_num_running_reqs,
+            max_inflight_batches=config.max_inflight_batches,
             duration_mode=config.duration_mode,
             prefill_s_per_token=config.prefill_s_per_token,
             decode_s_per_token=config.decode_s_per_token,

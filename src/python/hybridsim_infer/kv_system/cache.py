@@ -72,7 +72,6 @@ class KvCacheManager(ABC):
         self,
         client: KvClient,
         *,
-        kv_mode: str = "store",
         kv_lookup_async: bool = False,
     ) -> None:
         raise NotImplementedError(f"{type(self).__name__} has no remote client")
@@ -117,7 +116,6 @@ class VllmKvCacheManager(KvCacheManager):
     _prefix_entries: list[list[int]] = field(default_factory=list)
     _next_block_id: int = 0
     _client: Optional[KvClient] = field(default=None, repr=False)
-    _kv_mode: str = "store"
     _kv_lookup_async: bool = False
     _pending_kv_pulls: set[int] = field(default_factory=set)
     _null_reserved: int = field(default=0, init=False)
@@ -216,11 +214,9 @@ class VllmKvCacheManager(KvCacheManager):
         self,
         client: KvClient,
         *,
-        kv_mode: str = "store",
         kv_lookup_async: bool = False,
     ) -> None:
         self._client = client
-        self._kv_mode = str(kv_mode)
         self._kv_lookup_async = bool(kv_lookup_async)
 
     def start_client(self) -> None:
@@ -236,13 +232,9 @@ class VllmKvCacheManager(KvCacheManager):
             return {"hit": False, "num_tokens": 0}
         params = request.kv_transfer_params or {}
 
+        # Prefill-phase PD request: no remote lookup on this replica.
         if params.get("do_remote_decode") and not params.get("do_remote_prefill"):
             return {"hit": False, "num_tokens": 0}
-
-        if self._kv_mode == "p2p" or params.get("do_remote_prefill"):
-            return self._client.lookup_p2p(
-                request.request_id, list(request.prompt_token_ids)
-            )
 
         cached = request.lookup_result
         if cached is None:
@@ -251,6 +243,19 @@ class VllmKvCacheManager(KvCacheManager):
             request.lookup_result = None
             request.pending_lookup = False
             return cached
+
+        # Decode-phase PD: skip Store hash match; control-plane RTT to source P.
+        if params.get("do_remote_prefill"):
+            if request.pending_lookup:
+                return {"pending": True}
+            location = params.get("remote_replica_id")
+            self._client.lookup_control_plane(
+                request.request_id,
+                list(request.prompt_token_ids),
+                location=location,
+            )
+            request.pending_lookup = True
+            return {"pending": True}
 
         if self._kv_lookup_async:
             if request.pending_lookup:
@@ -282,9 +287,11 @@ class VllmKvCacheManager(KvCacheManager):
         return super().on_lookup_reply(msg)
 
     async def save_computed_prefixes(self, requests: list[InferenceRequest]) -> None:
-        if self._client is None or self._kv_mode != "store":
+        # Save when Store is wired (client may exist for PD control-plane alone).
+        if self._client is None or not self._client.has_store:
             return
         for req in requests:
+            # Prefill-phase PD handoff requests can still publish to Store.
             prefix = list(req.prompt_token_ids[: req.num_computed_tokens])
             if not prefix:
                 continue

@@ -7,7 +7,7 @@ from typing import Any, Optional
 
 from hybridsim_infer.frameworks.base import InferenceFramework, RemoteLookupFn
 from hybridsim_infer.request import InferenceRequest, RequestStatus
-from hybridsim_infer.stubs import (
+from hybridsim_infer.schedule_types import (
     DecodeChunk,
     PrefillChunk,
     RemoteKvPull,

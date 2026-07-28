@@ -151,8 +151,8 @@ class TestSchedulePhases(unittest.TestCase):
         self.assertIn("vllm", FrameworkFactory.registered())
 
     def test_token_proportional_predictor(self) -> None:
-        from hybridsim_infer.predictors import TokenProportionalPredictor
-        from hybridsim_infer.stubs import PrefillChunk, ScheduleBatch
+        from hybridsim_infer.workload_generators import TokenProportionalPredictor
+        from hybridsim_infer.schedule_types import PrefillChunk, ScheduleBatch
 
         req = InferenceRequest(request_id=1, num_prefill_tokens=10, num_decode_tokens=0)
         batch = ScheduleBatch(
@@ -243,7 +243,6 @@ class TestKvClientPath(unittest.TestCase):
         cfg = InferenceConfig(
             num_replicas=1,
             enable_kv_client=True,
-            kv_mode="store",
             kv_lookup_async=True,
             kv_lookup_rtt_s=0.005,
             step_interval=1e-3,
@@ -272,14 +271,14 @@ class TestKvClientPath(unittest.TestCase):
             infra.finished_requests[0].num_computed_tokens, len(prompt) + 2
         )
 
-    def test_p2p_handoff_decode_rdma(self) -> None:
+    def test_pd_handoff_decode_rdma(self) -> None:
         prompt = list(range(40, 48))
         cfg = InferenceConfig(
-            num_replicas=2,
+            cluster_type="pd",
+            num_prefill_replicas=1,
+            num_decode_replicas=1,
             enable_kv_client=True,
-            kv_mode="p2p",
-            kv_p2p_prefill_replica=0,
-            kv_p2p_decode_replica=1,
+            kv_lookup_rtt_s=0.002,
             step_interval=1e-3,
             dummy_exec_s=0.01,
             kv_transfer_s=1e-4,
@@ -288,7 +287,8 @@ class TestKvClientPath(unittest.TestCase):
             tokens_per_step=8,
         )
         infra = build_inference_simulation(cfg)
-        self.assertIsNone(infra.kv_store)
+        self.assertIsNotNone(infra.kv_store)
+        self.assertEqual(len(infra.replicas), 2)
         req = InferenceRequest(
             request_id=11,
             arrived_at=0.0,
@@ -304,7 +304,110 @@ class TestKvClientPath(unittest.TestCase):
         self.assertTrue(done.completed)
         self.assertEqual(done.num_computed_tokens, len(prompt) + 3)
         params = done.kv_transfer_params or {}
-        self.assertTrue(params.get("do_remote_prefill") or params.get("_handed_off"))
+        self.assertTrue(params.get("do_remote_prefill"))
+        self.assertTrue(params.get("_handed_off"))
+        self.assertEqual(params.get("remote_replica_id"), 0)
+
+    def test_pd_decode_skips_store_hash_match(self) -> None:
+        """Decode control-plane lookup ignores Store hash hits (still RTT + pull)."""
+        prompt = list(range(50, 58))
+        cfg = InferenceConfig(
+            cluster_type="pd",
+            num_prefill_replicas=1,
+            num_decode_replicas=1,
+            enable_kv_client=True,
+            kv_lookup_rtt_s=0.003,
+            step_interval=1e-3,
+            dummy_exec_s=0.01,
+            kv_transfer_s=1e-4,
+            kv_bandwidth_gbps=100.0,
+            block_size=8,
+            tokens_per_step=8,
+        )
+        infra = build_inference_simulation(cfg)
+        assert infra.kv_store is not None
+        # Seed Store with the same prompt so a hash-match path would also hit.
+        infra.kv_store.seed(prompt)
+        req = InferenceRequest(
+            request_id=12,
+            arrived_at=0.0,
+            num_prefill_tokens=len(prompt),
+            num_decode_tokens=2,
+            prompt_token_ids=list(prompt),
+        )
+        infra.schedule_arrivals([req])
+        t0 = infra.now
+        infra.run()
+        infra.check_errors()
+        done = infra.finished_requests[0]
+        self.assertTrue(done.completed)
+        # Control-plane RTT must advance sim time beyond a zero-delay hash hit.
+        self.assertGreaterEqual(infra.now - t0, cfg.kv_lookup_rtt_s)
+        params = done.kv_transfer_params or {}
+        self.assertEqual(params.get("remote_replica_id"), 0)
+
+    def test_pd_2p2d_least_load(self) -> None:
+        from hybridsim_infer.cluster import PdClusterManager
+
+        mgr = PdClusterManager(
+            prefill_replica_ids=[0, 1],
+            decode_replica_ids=[2, 3],
+        )
+        mgr.bind_replicas([object() for _ in range(4)])
+        arrive_ids = []
+        for i in range(4):
+            req = InferenceRequest(
+                request_id=i,
+                num_prefill_tokens=8,
+                num_decode_tokens=1,
+            )
+            arrive_ids.append(mgr.on_arrive(req))
+        self.assertEqual(arrive_ids, [0, 1, 0, 1])
+
+        decode_ids = []
+        for i, from_p in enumerate(arrive_ids):
+            req = InferenceRequest(
+                request_id=100 + i,
+                num_prefill_tokens=8,
+                num_decode_tokens=1,
+            )
+            decode_ids.append(
+                mgr.on_handoff(req, from_replica_id=from_p, transfer_id=f"t{i}")
+            )
+            self.assertTrue(req.kv_transfer_params.get("do_remote_prefill"))
+            self.assertEqual(req.kv_transfer_params.get("remote_replica_id"), from_p)
+        self.assertEqual(decode_ids, [2, 3, 2, 3])
+
+        # Full DES: 2P+2D cluster completes multiple requests.
+        cfg = InferenceConfig(
+            cluster_type="pd",
+            num_prefill_replicas=2,
+            num_decode_replicas=2,
+            enable_kv_client=True,
+            step_interval=1e-3,
+            dummy_exec_s=0.01,
+            block_size=8,
+            tokens_per_step=8,
+        )
+        infra = build_inference_simulation(cfg)
+        self.assertEqual(len(infra.replicas), 4)
+        prompt = list(range(60, 68))
+        reqs = [
+            InferenceRequest(
+                request_id=i,
+                arrived_at=float(i) * 0.01,
+                num_prefill_tokens=len(prompt),
+                num_decode_tokens=1,
+                prompt_token_ids=list(prompt),
+            )
+            for i in range(4)
+        ]
+        infra.schedule_arrivals(reqs)
+        infra.run()
+        infra.check_errors()
+        self.assertEqual(len(infra.finished_requests), 4)
+        for done in infra.finished_requests:
+            self.assertTrue(done.completed)
 
     def test_local_prefix_reuse(self) -> None:
         cfg = InferenceConfig(

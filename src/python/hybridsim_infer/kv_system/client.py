@@ -6,7 +6,7 @@ from typing import Any, Callable, Literal, Optional
 
 from hybridsim_infer.kv_system.block_keys import block_aligned_tokens, block_keys_from_tokens
 from hybridsim_infer.messages import KVLookupMsg, KVLookupReplyMsg, KVUpdateMsg
-from hybridsim_infer.stubs import kv_transfer_workload
+from hybridsim_infer.workload_generators import kv_transfer_workload
 
 TransferDirection = Literal["pull", "push"]
 
@@ -16,7 +16,7 @@ class KvClient:
 
     Analogous to the local Mooncake client embedded in a vLLM instance:
     - sync/async metadata RPC to centralized master (``KvStoreActor``)
-    - P2P: local fixed-address lookup (no store match)
+    - control-plane lookup (PD Decode): skip hash match, simulate Prefill-GPU RTT
     - async data plane via TimeoutKernel on a dedicated EngineActor
     """
 
@@ -31,7 +31,6 @@ class KvClient:
         bytes_per_token: float = 16.0,
         transfer_s_floor: float = 1e-4,
         lookup_rtt_s: float = 1e-3,
-        p2p_location: Any = 1,
         on_transfer_complete: Callable[[int, int, str], None],
     ) -> None:
         self._owner = owner
@@ -42,7 +41,6 @@ class KvClient:
         self.bytes_per_token = float(bytes_per_token)
         self.transfer_s_floor = float(transfer_s_floor)
         self.lookup_rtt_s = float(lookup_rtt_s)
-        self.p2p_location = p2p_location
         self._on_transfer_complete = on_transfer_complete
         self._inflight: dict[int, tuple[int, TransferDirection]] = {}
         self._lookup_cache: dict[int, dict[str, Any]] = {}
@@ -52,6 +50,10 @@ class KvClient:
     @property
     def busy(self) -> bool:
         return bool(self._inflight)
+
+    @property
+    def has_store(self) -> bool:
+        return self._store is not None
 
     def start(self) -> None:
         self._engine.start()
@@ -64,17 +66,41 @@ class KvClient:
         bps = max(1e-9, self.bandwidth_gbps) * (1e9 / 8.0)
         return max(self.transfer_s_floor, nbytes / bps)
 
-    def lookup_p2p(self, request_id: int, token_ids: list[int]) -> dict[str, Any]:
-        """Local fixed-address hit (no block-key match, no Store Msg)."""
-        _ = request_id
+    def control_plane_hit(
+        self,
+        token_ids: list[int],
+        *,
+        location: Any,
+    ) -> dict[str, Any]:
+        """Full prompt as hit without Store hash match (Prefill GPU known)."""
         num_tokens = block_aligned_tokens(len(token_ids), self.block_size)
         return {
             "hit": num_tokens > 0,
             "num_tokens": num_tokens,
             "num_blocks": num_tokens // self.block_size if self.block_size else 0,
-            "location": self.p2p_location,
-            "mode": "p2p",
+            "location": location,
+            "mode": "control_plane",
         }
+
+    def lookup_control_plane(
+        self,
+        request_id: int,
+        token_ids: list[int],
+        *,
+        location: Any,
+    ) -> dict[str, Any]:
+        """Fire delayed control-plane reply (RTT); caller treats as pending."""
+        result = self.control_plane_hit(token_ids, location=location)
+        self._owner.send(
+            KVLookupReplyMsg,
+            delay=self.lookup_rtt_s,
+            request_id=int(request_id),
+            hit=bool(result["hit"]),
+            num_tokens=int(result["num_tokens"]),
+            num_blocks=int(result["num_blocks"]),
+            location=location,
+        )
+        return {"pending": True}
 
     def take_cached_lookup(self, request_id: int) -> Optional[dict[str, Any]]:
         return self._lookup_cache.pop(int(request_id), None)
@@ -85,6 +111,7 @@ class KvClient:
             "num_tokens": int(msg.num_tokens),
             "num_blocks": int(msg.num_blocks),
             "location": msg.location,
+            "mode": "control_plane" if msg.location is not None else "store",
         }
         self._lookup_cache[int(msg.request_id)] = result
         return result

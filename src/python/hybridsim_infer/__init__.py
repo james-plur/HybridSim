@@ -4,12 +4,14 @@ from hybridsim_infer.builder import InferenceSimulation, build_inference_simulat
 from hybridsim_infer.config import InferenceConfig
 from hybridsim_infer.frameworks import FrameworkFactory, InferenceFramework, VllmFramework
 from hybridsim_infer.messages import INFER_MESSAGE_TYPES
-from hybridsim_infer.predictors import (
+from hybridsim_infer.request import InferenceRequest, RequestStatus
+from hybridsim_infer.workload_generators import (
     FixedDurationPredictor,
     TokenProportionalPredictor,
+    WorkloadGenerator,
     make_predictor,
+    make_workload_generator,
 )
-from hybridsim_infer.request import InferenceRequest, RequestStatus
 
 __all__ = [
     "FrameworkFactory",
@@ -22,6 +24,8 @@ __all__ = [
     "RequestStatus",
     "TokenProportionalPredictor",
     "VllmFramework",
+    "WorkloadGenerator",
     "build_inference_simulation",
     "make_predictor",
+    "make_workload_generator",
 ]

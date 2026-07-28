@@ -151,14 +151,13 @@ class TestStorePrefixEvict(unittest.TestCase):
 
 
 class TestPdHandoffDes(unittest.TestCase):
-    def test_p2p_des_completes(self) -> None:
+    def test_pd_des_completes(self) -> None:
         prompt = list(range(20, 28))
         cfg = InferenceConfig(
-            num_replicas=2,
+            cluster_type="pd",
+            num_prefill_replicas=1,
+            num_decode_replicas=1,
             enable_kv_client=True,
-            kv_mode="p2p",
-            kv_p2p_prefill_replica=0,
-            kv_p2p_decode_replica=1,
             step_interval=1e-3,
             dummy_exec_s=0.01,
             block_size=8,
