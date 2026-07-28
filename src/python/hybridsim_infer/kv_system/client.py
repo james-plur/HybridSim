@@ -33,10 +33,14 @@ class KvClient:
         lookup_rtt_s: float = 1e-3,
         on_transfer_complete: Callable[[int, int, str], None],
         workload_generator: Optional[KvTransferWorkloadGenerator] = None,
+        profile: Any = None,
+        replica_id: int = 0,
     ) -> None:
         self._owner = owner
         self._store = store
         self._engine = engine
+        self._profile = profile
+        self._replica_id = int(replica_id)
         self.block_size = int(block_size)
         self.bandwidth_gbps = float(bandwidth_gbps)
         self.bytes_per_token = float(bytes_per_token)
@@ -204,6 +208,16 @@ class KvClient:
             num_tokens=int(num_tokens),
         )
         self._inflight[wid] = (int(request_id), direction)
+        if self._profile is not None:
+            start_s = float(self._owner.sim.now())
+            self._profile.emit_kv_transfer(
+                start_s=start_s,
+                duration_s=duration_s,
+                replica_id=self._replica_id,
+                request_id=int(request_id),
+                direction=str(direction),
+                num_tokens=int(num_tokens),
+            )
         self._engine.send_workload(workload)
 
     def _handle_complete(self, workload_id: int) -> None:

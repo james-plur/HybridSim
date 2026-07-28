@@ -16,8 +16,33 @@ Native Actor-based inference on hybridsim. Corresponds to
 | schedule / batch | `hybridsim_infer.frameworks`（默认 `VllmFramework`；`FrameworkFactory` 可扩展） |
 | Request arrivals | `hybridsim_infer.request_generators`（`List` / ServeGen → `schedule_arrivals`） |
 | Fake GPU duration | `hybridsim_infer.workload_generators`（`fixed` / `token_proportional` / `predict`） |
+| Request profile | `hybridsim.request_profile`（独立进程写 Chrome Trace JSON → `profile/`） |
 
 **RequestGenerator vs WorkloadGenerator**：前者生成带 `arrived_at` 的 `InferenceRequest` 序列并注入 ClusterScheduler；后者把已调度的 `ScheduleBatch` 变成 Engine TimeoutKernel。ServeGen 虽自称 workload generator，在本项目中只作为请求到达/长度采样后端。
+
+## Request profile（Chrome Trace）
+
+`InferenceConfig(enable_request_profile=True)` 时，仿真在**子进程**收集事件并写出 JSON（默认 `<repo>/profile/request_profile.json`，目录已 gitignore）。
+
+轨道：
+
+| Process | Tracks |
+|---------|--------|
+| `Cluster` | `schedule`（`ClusterSchedule`，dur≈0）、`dispatch`（`Dispatch` → replica） |
+| `Replica_N` | `engine`（`EngineReq` / `KvPull` / `KvPush`）、`schedule`（`ReplicaEnqueue` / `ReplicaSchedule`） |
+
+Flow 箭头（Chrome Trace `ph=s/f`）：`ClusterToReplica`（Dispatch → ReplicaEnqueue）、`ScheduleToEngine`（ReplicaSchedule → EngineReq）。
+
+请求元信息写在 `metadata.requests[<request_id>]`（arrived_at、prefill/decode token、prompt_len/prefix、kv_transfer_params、完成态等）；Dispatch / Enqueue / EngineReq 的 `args` 也带精简字段，方便 UI 悬停查看。
+
+打开方式：Chrome `chrome://tracing` 或 [Perfetto UI](https://ui.perfetto.dev/) 加载 JSON。
+
+```bash
+PYTHONPATH=src/python:. python examples/inference/pd_multipool_profile_demo.py
+# → profile/pd_multipool_profile_demo.json
+```
+
+CLI：`--enable_request_profile` / `--request_profile_path` / `--request_profile_dir`。
 
 ## Topology（`cluster_type`）
 
@@ -63,11 +88,14 @@ HF_HUB_OFFLINE=1 VLLM_TARGET_DEVICE=cpu PYTHONPATH=src/python:tests:. \
 ## Run demo / tests
 
 ```bash
-# Monolithic + Store seed hit
+# Monolithic + Store seed hit (+ request profile)
 PYTHONPATH=src/python:. python examples/inference/monolithic_demo.py
 
 # PD disagg (P→D handoff + control-plane RTT + RDMA sim) with local prefix cache
 PYTHONPATH=src/python:. python examples/inference/pd_disagg_prefix_demo.py
+
+# 2P+2D + KV + prefix cache — best for visualizing the request profile Gantt
+PYTHONPATH=src/python:. python examples/inference/pd_multipool_profile_demo.py
 
 # ServeGen RequestGenerator (optional: install ServeGen first)
 #   git clone https://github.com/alibaba/ServeGen.git && pip install -e ./ServeGen
@@ -77,6 +105,7 @@ PYTHONPATH=src/python:. python examples/inference/servegen_demo.py
 
 PYTHONPATH=src/python:. python tests/test_inference_skeleton.py -v
 PYTHONPATH=src/python:. python tests/test_request_generator.py -v
+PYTHONPATH=src/python:. python tests/test_request_profile.py -v
 HF_HUB_OFFLINE=1 VLLM_TARGET_DEVICE=cpu PYTHONPATH=src/python:tests:. \
   python tests/test_schedule_alignment.py -v
 PYTHONHASHSEED=0 PYTHONPATH=src/python:tests:. \

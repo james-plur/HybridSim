@@ -24,6 +24,12 @@ class SimulationConfig:
     build_dir: Optional[Path] = None
     #: If set, schedule traces are written under this directory.
     trace_output_dir: Optional[Path] = None
+    #: Enable request-level Chrome Trace profile (writer in a child process).
+    enable_request_profile: bool = False
+    #: Explicit profile JSON path (overrides ``request_profile_dir``).
+    request_profile_path: Optional[Path] = None
+    #: Directory for ``request_profile.json`` when path is unset (default: ``<repo>/profile``).
+    request_profile_dir: Optional[Path] = None
 
     @classmethod
     def parse_common_cli_args(
@@ -38,10 +44,31 @@ class SimulationConfig:
             help="Optional CMake build dir with hybridsim_py (prefer pip install -e .)",
         )
         parser.add_argument("--trace_output_dir", type=Path, default=None)
+        parser.add_argument(
+            "--enable_request_profile",
+            action="store_true",
+            default=False,
+            help="Write Chrome Trace request profile via a child process",
+        )
+        parser.add_argument(
+            "--request_profile_path",
+            type=Path,
+            default=None,
+            help="Explicit request profile JSON path",
+        )
+        parser.add_argument(
+            "--request_profile_dir",
+            type=Path,
+            default=None,
+            help="Directory for request_profile.json (default: <repo>/profile)",
+        )
         args, remaining = parser.parse_known_args(list(argv))
         kwargs = {
             "build_dir": args.build_dir,
             "trace_output_dir": args.trace_output_dir,
+            "enable_request_profile": bool(args.enable_request_profile),
+            "request_profile_path": args.request_profile_path,
+            "request_profile_dir": args.request_profile_dir,
         }
         return kwargs, remaining
 

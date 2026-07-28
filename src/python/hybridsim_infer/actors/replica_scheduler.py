@@ -65,10 +65,12 @@ class ReplicaSchedulerActor(ActorBase):
         frontier_replica_id: int = 0,
         frontier_is_moe: bool = False,
         workload_generator: Optional[WorkloadGenerator] = None,
+        profile: Any = None,
     ) -> None:
         self.replica_id = replica_id
         self._cluster = cluster
         self._engine = engine
+        self._profile = profile
         self._step_interval = float(step_interval)
         self._dummy_exec_s = float(dummy_exec_s)
         self._max_num_scheduled_tokens = int(max_num_scheduled_tokens)
@@ -125,6 +127,8 @@ class ReplicaSchedulerActor(ActorBase):
                 transfer_s_floor=kv_transfer_s,
                 lookup_rtt_s=kv_lookup_rtt_s,
                 on_transfer_complete=self._on_kv_transfer_complete,
+                profile=self._profile,
+                replica_id=self.replica_id,
             )
             self._kv.attach_client(
                 client,
@@ -201,6 +205,13 @@ class ReplicaSchedulerActor(ActorBase):
         req = msg.request
         req.status = RequestStatus.WAITING
         self.waiting.append(req)
+        if self._profile is not None:
+            self._profile.emit_replica_enqueue(
+                time_s=float(self.sim.now()),
+                replica_id=self.replica_id,
+                request_id=int(req.request_id),
+                request=req,
+            )
         self._arm_step()
 
     @on(KVLookupReplyMsg)
@@ -232,6 +243,7 @@ class ReplicaSchedulerActor(ActorBase):
             remote_lookup = (
                 self._kv.remote_lookup if self._kv.remote_enabled else None
             )
+            sched_t0 = float(self.sim.now())
             result = await self._framework.schedule_step(
                 waiting,
                 running_ready,
@@ -244,6 +256,21 @@ class ReplicaSchedulerActor(ActorBase):
             # Preserve requests still executing on the Worker.
             self.waiting = result.waiting
             self.running = running_held + result.running
+
+            batch_req_ids: list[int] = []
+            if result.batch is not None:
+                batch_req_ids = [int(r.request_id) for r in result.batch.requests]
+            if self._profile is not None:
+                self._profile.emit_replica_schedule(
+                    time_s=sched_t0,
+                    replica_id=self.replica_id,
+                    batch_id=(
+                        int(result.batch.batch_id)
+                        if result.batch is not None
+                        else None
+                    ),
+                    request_ids=batch_req_ids or None,
+                )
 
             if result.finished_cached and self._cluster is not None:
                 for req in result.finished_cached:
@@ -261,6 +288,20 @@ class ReplicaSchedulerActor(ActorBase):
                 wid = self._next_workload_id
                 self._next_workload_id += 1
                 workload = self._workload_generator(result.batch, workload_id=wid)
+                engine_start = float(self.sim.now())
+                kernels = workload.get("kernels") or []
+                duration_s = float(kernels[0].get("duration", 0.0)) if kernels else 0.0
+                if self._profile is not None:
+                    for req in result.batch.requests:
+                        self._profile.emit_engine_req(
+                            start_s=engine_start,
+                            duration_s=duration_s,
+                            replica_id=self.replica_id,
+                            request_id=int(req.request_id),
+                            workload_id=wid,
+                            batch_id=int(result.batch.batch_id),
+                            request=req,
+                        )
                 self._worker.submit(workload, result.batch)
 
         if self._has_work():

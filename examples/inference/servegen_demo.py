@@ -11,6 +11,8 @@ from hybridsim_infer import (
 
 
 def main() -> None:
+    from hybridsim.request_profile import default_profile_dir
+
     cfg = InferenceConfig(
         num_replicas=1,
         step_interval=1e-3,
@@ -21,6 +23,8 @@ def main() -> None:
         max_num_scheduled_tokens=256,
         max_num_running_reqs=32,
         num_gpu_blocks=4096,
+        enable_request_profile=True,
+        request_profile_path=default_profile_dir() / "servegen_demo.json",
     )
     infra = build_inference_simulation(cfg)
 
@@ -48,6 +52,8 @@ def main() -> None:
         )
     if len(finished) != len(requests):
         raise SystemExit(f"expected {len(requests)} finished, got {len(finished)}")
+    if infra.profile_path is not None:
+        print(f"request profile: {infra.profile_path}")
 
 
 if __name__ == "__main__":

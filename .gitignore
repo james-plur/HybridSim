@@ -4,6 +4,7 @@ third_party/
 *.json
 *.pyc
 outputs/
+profile/
 *.egg-info/
 .eggs/
 dist/

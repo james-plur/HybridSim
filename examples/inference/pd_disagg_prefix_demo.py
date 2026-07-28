@@ -52,7 +52,11 @@ def main() -> None:
         duration_mode="token_proportional",
         prefill_s_per_token=5e-5,
         decode_s_per_token=2e-4,
+        enable_request_profile=True,
     )
+    from hybridsim.request_profile import default_profile_dir
+
+    cfg.request_profile_path = default_profile_dir() / "pd_disagg_prefix_demo.json"
     infra = build_inference_simulation(cfg)
     assert infra.kv_store is not None  # enable_kv_client wires shared Store
     assert len(infra.replicas) == 2
@@ -131,6 +135,8 @@ def main() -> None:
 
     if len(finished) != len(requests):
         raise SystemExit(f"expected {len(requests)} finished, got {len(finished)}")
+    if infra.profile_path is not None:
+        print(f"request profile: {infra.profile_path}")
     print("ok")
 
 

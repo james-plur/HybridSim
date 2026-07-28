@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Any, Optional
 
-from hybridsim import Simulation
+from hybridsim import Simulation, create_request_profile_session
 
 from hybridsim_infer.actors.cluster_scheduler import ClusterSchedulerActor
 from hybridsim_infer.actors.kv_store import KvStoreActor
@@ -28,6 +28,7 @@ class InferenceSimulation:
     replicas: list[ReplicaSchedulerActor]
     config: InferenceConfig
     kv_store: Optional[KvStoreActor] = None
+    profile: Any = field(default=None, repr=False)
 
     def schedule_arrivals(self, requests: list[InferenceRequest]) -> None:
         self.cluster.schedule_arrivals(requests)
@@ -41,7 +42,11 @@ class InferenceSimulation:
         return requests
 
     def run(self) -> None:
-        self.sim.run()
+        try:
+            self.sim.run()
+        finally:
+            if self.profile is not None:
+                self.profile.stop()
 
     def check_errors(self) -> None:
         self.sim.check_errors()
@@ -53,6 +58,12 @@ class InferenceSimulation:
     @property
     def now(self) -> float:
         return self.sim.now
+
+    @property
+    def profile_path(self):
+        if self.profile is None:
+            return None
+        return getattr(self.profile, "output_path", None)
 
 
 def build_inference_simulation(
@@ -76,10 +87,20 @@ def build_inference_simulation(
     else:
         manager = MonolithClusterManager()
 
+    profile = create_request_profile_session(
+        enabled=bool(getattr(config, "enable_request_profile", False)),
+        request_profile_path=getattr(config, "request_profile_path", None),
+        request_profile_dir=getattr(config, "request_profile_dir", None),
+    )
+
     sim = Simulation(config)
     sim.register_messages(list(INFER_MESSAGE_TYPES))
 
-    cluster = sim.spawn_actor(ClusterSchedulerActor, manager=manager)
+    cluster = sim.spawn_actor(
+        ClusterSchedulerActor,
+        manager=manager,
+        profile=profile if getattr(profile, "enabled", False) else None,
+    )
 
     kv_store: Optional[KvStoreActor] = None
     if config.enable_kv_client:
@@ -89,6 +110,7 @@ def build_inference_simulation(
             block_size=config.block_size,
         )
 
+    profile_arg = profile if getattr(profile, "enabled", False) else None
     replicas: list[ReplicaSchedulerActor] = []
     for rid in range(num_replicas):
         engine = sim.create_engine_actor()
@@ -134,6 +156,7 @@ def build_inference_simulation(
             frontier_cluster_type=getattr(config, "frontier_cluster_type", None),
             frontier_replica_id=int(getattr(config, "frontier_replica_id", 0) or 0),
             frontier_is_moe=bool(getattr(config, "frontier_is_moe", False)),
+            profile=profile_arg,
         )
         replicas.append(replica)
 
@@ -144,4 +167,5 @@ def build_inference_simulation(
         replicas=replicas,
         config=config,
         kv_store=kv_store,
+        profile=profile,
     )

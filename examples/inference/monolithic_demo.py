@@ -19,7 +19,13 @@ def main() -> None:
         max_num_scheduled_tokens=64,
         enable_kv_client=True,
         kv_transfer_s=0.015,
+        enable_request_profile=True,
+        request_profile_path=None,  # → <repo>/profile/request_profile.json
     )
+    # Distinct file so demos do not clobber each other.
+    from hybridsim.request_profile import default_profile_dir
+
+    cfg.request_profile_path = default_profile_dir() / "monolithic_demo.json"
     infra = build_inference_simulation(cfg)
 
     shared_prompt = [100, 101, 102, 103, 104, 105, 106, 107]
@@ -62,6 +68,8 @@ def main() -> None:
         )
     if len(finished) != len(requests):
         raise SystemExit(f"expected {len(requests)} finished, got {len(finished)}")
+    if infra.profile_path is not None:
+        print(f"request profile: {infra.profile_path}")
 
 
 if __name__ == "__main__":
