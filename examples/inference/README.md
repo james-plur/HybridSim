@@ -25,8 +25,6 @@ Native Actor-based inference on hybridsim. Corresponds to
 
 PD 配置：`num_prefill_replicas` / `num_decode_replicas`（总副本 = 二者之和）。Replica **不**区分身份，行为只看请求字段。
 
-兼容 shim：`kv_mode=p2p` → `cluster_type=pd`（文档请用 `cluster_type`）。
-
 ## Mooncake-style KV（交互骨架）
 
 对齐 **调度阶段**（非真 RDMA / mooncake_master）：

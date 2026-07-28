@@ -1,4 +1,4 @@
-"""Workload generators: ScheduleBatch (or KV xfer) → EngineActor workload dict."""
+"""Workload generators: schedule / KV transfer → EngineActor workload dict."""
 
 from __future__ import annotations
 
@@ -9,7 +9,10 @@ from hybridsim_infer.schedule_types import ScheduleBatch
 
 
 class WorkloadGenerator(ABC):
-    """Pluggable builder: ``workload = generator(batch, workload_id=...)``."""
+    """Pluggable builder for schedule batches: ``workload = generator(batch, workload_id=...)``.
+
+    KV transfer workloads use ``KvTransferWorkloadGenerator`` (sibling API).
+    """
 
     @abstractmethod
     def __call__(

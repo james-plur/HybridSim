@@ -23,11 +23,19 @@ class InferenceConfig(SimulationConfig):
     step_interval: float = 1e-3
     #: Dummy TimeoutKernel duration when ``duration_mode="fixed"``.
     dummy_exec_s: float = 0.05
-    #: ``fixed`` or ``token_proportional`` (fake GPU time ∝ scheduled tokens).
+    #: ``fixed``, ``token_proportional``, or ``predict`` (Frontier RF; needs Frontier).
     duration_mode: str = "fixed"
     prefill_s_per_token: float = 1e-4
     decode_s_per_token: float = 1e-3
     duration_base_s: float = 0.0
+    #: When ``duration_mode=predict``: dense MoE flag for Frontier ``Batch.is_moe``.
+    frontier_is_moe: bool = False
+    #: When ``duration_mode=predict``: replica id stamped on adapted Frontier ``Batch``.
+    frontier_replica_id: int = 0
+    #: Injected Frontier predictor for ``predict`` mode (not serialized; set by caller).
+    frontier_predictor: object | None = None
+    #: Injected Frontier ``ClusterType`` for ``predict`` mode (default MONOLITHIC).
+    frontier_cluster_type: object | None = None
     #: Cap on tokens scheduled for one request's prefill chunk in a step.
     tokens_per_step: int = 8
     #: Decode tokens scheduled per request per step (vLLM-like default: 1).
@@ -63,17 +71,9 @@ class InferenceConfig(SimulationConfig):
     #: Max concurrent Worker batches per replica (async pipeline depth).
     #: Occupancy held from submit until BatchEnd is fully handled.
     max_inflight_batches: int = 1
-    #: Deprecated topology shim: ``p2p`` → ``cluster_type=pd``; ``store`` ignored.
-    kv_mode: str = ""
-    #: Deprecated; ignored (use num_prefill_replicas / num_decode_replicas).
-    kv_p2p_prefill_replica: int = 0
-    kv_p2p_decode_replica: int = 1
 
     def resolved_cluster_type(self) -> str:
         ct = (self.cluster_type or "monolith").lower().strip()
-        mode = (self.kv_mode or "").lower().strip()
-        if mode == "p2p":
-            return "pd"
         if ct in ("monolith", "pd"):
             return ct
         return "monolith"

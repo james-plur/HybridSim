@@ -6,7 +6,7 @@ from typing import Any, Callable, Literal, Optional
 
 from hybridsim_infer.kv_system.block_keys import block_aligned_tokens, block_keys_from_tokens
 from hybridsim_infer.messages import KVLookupMsg, KVLookupReplyMsg, KVUpdateMsg
-from hybridsim_infer.workload_generators import kv_transfer_workload
+from hybridsim_infer.workload_generators.kv_transfer import KvTransferWorkloadGenerator
 
 TransferDirection = Literal["pull", "push"]
 
@@ -32,6 +32,7 @@ class KvClient:
         transfer_s_floor: float = 1e-4,
         lookup_rtt_s: float = 1e-3,
         on_transfer_complete: Callable[[int, int, str], None],
+        workload_generator: Optional[KvTransferWorkloadGenerator] = None,
     ) -> None:
         self._owner = owner
         self._store = store
@@ -42,6 +43,7 @@ class KvClient:
         self.transfer_s_floor = float(transfer_s_floor)
         self.lookup_rtt_s = float(lookup_rtt_s)
         self._on_transfer_complete = on_transfer_complete
+        self._workload_generator = workload_generator or KvTransferWorkloadGenerator()
         self._inflight: dict[int, tuple[int, TransferDirection]] = {}
         self._lookup_cache: dict[int, dict[str, Any]] = {}
         self._next_workload_id = 1
@@ -194,10 +196,12 @@ class KvClient:
         wid = self._next_workload_id
         self._next_workload_id += 1
         duration_s = self.transfer_duration_s(num_tokens)
-        workload = kv_transfer_workload(
+        workload = self._workload_generator(
             workload_id=wid,
             request_id=int(request_id),
             duration_s=duration_s,
+            direction=direction,
+            num_tokens=int(num_tokens),
         )
         self._inflight[wid] = (int(request_id), direction)
         self._engine.send_workload(workload)

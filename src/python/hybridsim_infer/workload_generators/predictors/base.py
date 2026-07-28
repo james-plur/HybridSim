@@ -1,4 +1,4 @@
-"""Batch duration predictors used by timeout-kernel workload generators."""
+"""Built-in batch duration predictors (fixed / token-proportional)."""
 
 from __future__ import annotations
 

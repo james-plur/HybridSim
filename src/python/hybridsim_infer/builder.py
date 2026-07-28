@@ -121,6 +121,10 @@ def build_inference_simulation(
             prefill_s_per_token=config.prefill_s_per_token,
             decode_s_per_token=config.decode_s_per_token,
             duration_base_s=config.duration_base_s,
+            frontier_predictor=getattr(config, "frontier_predictor", None),
+            frontier_cluster_type=getattr(config, "frontier_cluster_type", None),
+            frontier_replica_id=int(getattr(config, "frontier_replica_id", 0) or 0),
+            frontier_is_moe=bool(getattr(config, "frontier_is_moe", False)),
         )
         replicas.append(replica)
 

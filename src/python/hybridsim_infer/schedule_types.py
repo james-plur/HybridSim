@@ -1,7 +1,4 @@
-"""Schedule DTOs and cluster dispatch helpers.
-
-Used by frameworks, actors, and workload_generators.
-"""
+"""Schedule DTOs used by frameworks, actors, and workload_generators."""
 
 from __future__ import annotations
 
@@ -51,13 +48,3 @@ class ScheduleResult:
     finished_cached: list[InferenceRequest] = field(default_factory=list)
     #: If True, Phase 2 stopped early after queuing a remote KV pull.
     stop_after_remote: bool = False
-
-
-def dispatch(
-    request: InferenceRequest,
-    replica_loads: list[int],
-) -> int:
-    """Pick a replica id for ``request``. Stub: least-loaded."""
-    if not replica_loads:
-        return 0
-    return min(range(len(replica_loads)), key=lambda i: replica_loads[i])

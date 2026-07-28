@@ -60,6 +60,10 @@ class ReplicaSchedulerActor(ActorBase):
         decode_s_per_token: float = 1e-3,
         duration_base_s: float = 0.0,
         duration_predictor: Any = None,
+        frontier_predictor: Any = None,
+        frontier_cluster_type: Any = None,
+        frontier_replica_id: int = 0,
+        frontier_is_moe: bool = False,
         workload_generator: Optional[WorkloadGenerator] = None,
     ) -> None:
         self.replica_id = replica_id
@@ -87,6 +91,10 @@ class ReplicaSchedulerActor(ActorBase):
                 decode_s_per_token=decode_s_per_token,
                 duration_base_s=duration_base_s,
                 predictor=duration_predictor,
+                frontier_predictor=frontier_predictor,
+                frontier_cluster_type=frontier_cluster_type,
+                frontier_replica_id=frontier_replica_id,
+                frontier_is_moe=frontier_is_moe,
             )
         )
 

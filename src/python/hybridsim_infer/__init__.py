@@ -7,6 +7,7 @@ from hybridsim_infer.messages import INFER_MESSAGE_TYPES
 from hybridsim_infer.request import InferenceRequest, RequestStatus
 from hybridsim_infer.workload_generators import (
     FixedDurationPredictor,
+    PredictWorkloadGenerator,
     TokenProportionalPredictor,
     WorkloadGenerator,
     make_predictor,
@@ -21,6 +22,7 @@ __all__ = [
     "InferenceFramework",
     "InferenceRequest",
     "InferenceSimulation",
+    "PredictWorkloadGenerator",
     "RequestStatus",
     "TokenProportionalPredictor",
     "VllmFramework",
@@ -29,3 +31,12 @@ __all__ = [
     "make_predictor",
     "make_workload_generator",
 ]
+
+try:
+    from hybridsim_infer.workload_generators import (  # noqa: F401
+        FrontierBatchDurationPredictor,
+    )
+
+    __all__.append("FrontierBatchDurationPredictor")
+except ImportError:
+    pass

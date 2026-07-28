@@ -5,12 +5,10 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from hybridsim_infer.workload_generators.base import WorkloadGenerator
+from hybridsim_infer.workload_generators.predict import PredictWorkloadGenerator
 from hybridsim_infer.workload_generators.predictors import (
     BatchDurationPredictor,
     make_predictor,
-)
-from hybridsim_infer.workload_generators.timeout_kernel import (
-    TimeoutKernelWorkloadGenerator,
 )
 
 
@@ -22,8 +20,28 @@ def make_workload_generator(
     decode_s_per_token: float = 1e-3,
     duration_base_s: float = 0.0,
     predictor: Optional[BatchDurationPredictor] = None,
+    frontier_predictor: Any = None,
+    frontier_cluster_type: Any = None,
+    frontier_replica_id: int = 0,
+    frontier_is_moe: bool = False,
 ) -> WorkloadGenerator:
-    """Default: ``TimeoutKernelWorkloadGenerator`` over a duration predictor."""
+    """Build a ``PredictWorkloadGenerator`` over a duration predictor.
+
+    ``duration_mode``:
+      - ``fixed`` / ``token_proportional`` → built-in predictors
+      - ``predict`` → Frontier RF wrapper (requires Frontier + ``frontier_predictor``
+        or a ``FrontierBatchDurationPredictor`` as ``predictor``)
+    """
+    mode = (duration_mode or "fixed").lower().strip()
+    if mode == "predict":
+        return _make_frontier_predict_workload_generator(
+            predictor=predictor,
+            frontier_predictor=frontier_predictor,
+            frontier_cluster_type=frontier_cluster_type,
+            frontier_replica_id=frontier_replica_id,
+            frontier_is_moe=frontier_is_moe,
+        )
+
     pred = predictor or make_predictor(
         duration_mode=duration_mode,
         dummy_exec_s=dummy_exec_s,
@@ -31,14 +49,45 @@ def make_workload_generator(
         decode_s_per_token=decode_s_per_token,
         base_s=duration_base_s,
     )
-    return TimeoutKernelWorkloadGenerator(pred)
+    return PredictWorkloadGenerator(pred)
 
 
-def make_workload_generator_from_config(config: Any) -> WorkloadGenerator:
-    return make_workload_generator(
-        duration_mode=getattr(config, "duration_mode", "fixed"),
-        dummy_exec_s=getattr(config, "dummy_exec_s", 0.05),
-        prefill_s_per_token=getattr(config, "prefill_s_per_token", 1e-4),
-        decode_s_per_token=getattr(config, "decode_s_per_token", 1e-3),
-        duration_base_s=getattr(config, "duration_base_s", 0.0),
+def _make_frontier_predict_workload_generator(
+    *,
+    predictor: Optional[BatchDurationPredictor],
+    frontier_predictor: Any,
+    frontier_cluster_type: Any,
+    frontier_replica_id: int,
+    frontier_is_moe: bool,
+) -> WorkloadGenerator:
+    try:
+        from hybridsim_infer.workload_generators.predictors.frontier import (
+            FrontierBatchDurationPredictor,
+        )
+        from frontier.types import ClusterType
+    except ImportError as exc:
+        raise ImportError(
+            "duration_mode='predict' requires the Frontier package "
+            "(PYTHONPATH to Frontier or pip install -e $FRONTIER_ROOT)"
+        ) from exc
+
+    if isinstance(predictor, FrontierBatchDurationPredictor):
+        return PredictWorkloadGenerator(predictor)
+
+    if frontier_predictor is None:
+        raise ValueError(
+            "duration_mode='predict' requires frontier_predictor="
+            "BaseExecutionTimePredictor (e.g. RandomForest from "
+            "ExecutionTimePredictorRegistry) or a FrontierBatchDurationPredictor"
+        )
+
+    cluster_type = frontier_cluster_type
+    if cluster_type is None:
+        cluster_type = ClusterType.MONOLITHIC
+    wrap = FrontierBatchDurationPredictor(
+        frontier_predictor,
+        cluster_type=cluster_type,
+        replica_id=frontier_replica_id,
+        is_moe=frontier_is_moe,
     )
+    return PredictWorkloadGenerator(wrap)
