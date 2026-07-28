@@ -16,6 +16,7 @@ from hybridsim_infer.frameworks import FrameworkFactory
 from hybridsim_infer.kv_system import VllmKvCacheManager
 from hybridsim_infer.messages import INFER_MESSAGE_TYPES
 from hybridsim_infer.request import InferenceRequest
+from hybridsim_infer.request_generators.base import RequestGenerator
 
 
 @dataclass
@@ -30,6 +31,14 @@ class InferenceSimulation:
 
     def schedule_arrivals(self, requests: list[InferenceRequest]) -> None:
         self.cluster.schedule_arrivals(requests)
+
+    def schedule_from_generator(
+        self, generator: RequestGenerator
+    ) -> list[InferenceRequest]:
+        """Generate requests then inject arrivals via ``schedule_arrivals``."""
+        requests = generator.generate()
+        self.schedule_arrivals(requests)
+        return requests
 
     def run(self) -> None:
         self.sim.run()

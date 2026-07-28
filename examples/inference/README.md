@@ -14,7 +14,10 @@ Native Actor-based inference on hybridsim. Corresponds to
 | WorkerEngine | `hybridsim_infer.actors.WorkerEngine` |
 | KV Store / KV Client | `KvStoreActor` + `KvClient`（`enable_kv_client=True`） |
 | schedule / batch | `hybridsim_infer.frameworks`（默认 `VllmFramework`；`FrameworkFactory` 可扩展） |
-| Fake GPU duration | `hybridsim_infer.workload_generators`（`fixed` / `token_proportional`） |
+| Request arrivals | `hybridsim_infer.request_generators`（`List` / ServeGen → `schedule_arrivals`） |
+| Fake GPU duration | `hybridsim_infer.workload_generators`（`fixed` / `token_proportional` / `predict`） |
+
+**RequestGenerator vs WorkloadGenerator**：前者生成带 `arrived_at` 的 `InferenceRequest` 序列并注入 ClusterScheduler；后者把已调度的 `ScheduleBatch` 变成 Engine TimeoutKernel。ServeGen 虽自称 workload generator，在本项目中只作为请求到达/长度采样后端。
 
 ## Topology（`cluster_type`）
 
@@ -66,7 +69,14 @@ PYTHONPATH=src/python:. python examples/inference/monolithic_demo.py
 # PD disagg (P→D handoff + control-plane RTT + RDMA sim) with local prefix cache
 PYTHONPATH=src/python:. python examples/inference/pd_disagg_prefix_demo.py
 
+# ServeGen RequestGenerator (optional: install ServeGen first)
+#   git clone https://github.com/alibaba/ServeGen.git && pip install -e ./ServeGen
+#   # or from hybridsim: pip install -e ".[servegen]"
+# ClientPool reads data/ relative to the ServeGen clone; hybridsim chdirs there automatically.
+PYTHONPATH=src/python:. python examples/inference/servegen_demo.py
+
 PYTHONPATH=src/python:. python tests/test_inference_skeleton.py -v
+PYTHONPATH=src/python:. python tests/test_request_generator.py -v
 HF_HUB_OFFLINE=1 VLLM_TARGET_DEVICE=cpu PYTHONPATH=src/python:tests:. \
   python tests/test_schedule_alignment.py -v
 PYTHONHASHSEED=0 PYTHONPATH=src/python:tests:. \

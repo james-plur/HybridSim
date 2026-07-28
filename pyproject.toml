@@ -10,6 +10,11 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = []
 
+[project.optional-dependencies]
+servegen = [
+    "servegen @ git+https://github.com/alibaba/ServeGen.git",
+]
+
 [tool.setuptools.packages.find]
 where = ["src/python"]
 include = ["hybridsim*"]

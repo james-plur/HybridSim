@@ -5,6 +5,12 @@ from hybridsim_infer.config import InferenceConfig
 from hybridsim_infer.frameworks import FrameworkFactory, InferenceFramework, VllmFramework
 from hybridsim_infer.messages import INFER_MESSAGE_TYPES
 from hybridsim_infer.request import InferenceRequest, RequestStatus
+from hybridsim_infer.request_generators import (
+    ListRequestGenerator,
+    RequestGenerator,
+    ServeGenRequestGenerator,
+    map_servegen_request,
+)
 from hybridsim_infer.workload_generators import (
     FixedDurationPredictor,
     PredictWorkloadGenerator,
@@ -22,14 +28,18 @@ __all__ = [
     "InferenceFramework",
     "InferenceRequest",
     "InferenceSimulation",
+    "ListRequestGenerator",
     "PredictWorkloadGenerator",
+    "RequestGenerator",
     "RequestStatus",
+    "ServeGenRequestGenerator",
     "TokenProportionalPredictor",
     "VllmFramework",
     "WorkloadGenerator",
     "build_inference_simulation",
     "make_predictor",
     "make_workload_generator",
+    "map_servegen_request",
 ]
 
 try:
