@@ -13,6 +13,7 @@ from hybridsim_infer.request_generators import (
 )
 from hybridsim_infer.workload_generators import (
     FixedDurationPredictor,
+    OpWorkloadGenerator,
     PredictWorkloadGenerator,
     TokenProportionalPredictor,
     WorkloadGenerator,
@@ -29,6 +30,7 @@ __all__ = [
     "InferenceRequest",
     "InferenceSimulation",
     "ListRequestGenerator",
+    "OpWorkloadGenerator",
     "PredictWorkloadGenerator",
     "RequestGenerator",
     "RequestStatus",

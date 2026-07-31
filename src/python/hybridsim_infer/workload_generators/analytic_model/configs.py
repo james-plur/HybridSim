@@ -1,0 +1,147 @@
+"""Model / parallelism / device / network configs for analytic estimation."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+from hybridsim_infer.workload_generators.analytic_model.types import (
+    AttnVariant,
+    FfnActivation,
+    TpCommStyle,
+)
+
+
+@dataclass
+class ModelConfig:
+    """Transformer model shape used to build Operator DAGs.
+
+    Field names are hybridsim-native; comments note Frontier equivalents.
+    """
+
+    num_layers: int = 2
+    #: Frontier ``embedding_dim``.
+    hidden_size: int = 4096
+    #: Frontier ``mlp_hidden_dim`` (per-expert intermediate for MoE).
+    intermediate_size: int = 11008
+    num_q_heads: int = 32
+    num_kv_heads: int = 8
+    head_dim: int = 128
+    #: Bytes per element (BF16/FP16 → 2).
+    dtype_bytes: int = 2
+    attn_variant: AttnVariant | str = AttnVariant.GQA
+    ffn_activation: FfnActivation | str = FfnActivation.SILU
+    #: MLA latent dims (used when attn_variant=mla).
+    q_lora_rank: int = 0
+    kv_lora_rank: int = 512
+    qk_nope_head_dim: int = 128
+    qk_rope_head_dim: int = 64
+    v_head_dim: int = 128
+    #: MoE (Frontier ``MoEModelConfig``).
+    is_moe: bool = False
+    num_experts: int = 1
+    num_experts_per_tok: int = 1
+    #: Shared-expert intermediate dim; 0 disables share_expert ops.
+    share_expert_dim: int = 0
+    #: When True, omit explicit residual add ops (fused into norms).
+    fused_add_norm: bool = False
+
+    def resolved_attn_variant(self) -> AttnVariant:
+        if isinstance(self.attn_variant, AttnVariant):
+            return self.attn_variant
+        return AttnVariant(str(self.attn_variant).lower().strip())
+
+    def resolved_ffn_activation(self) -> FfnActivation:
+        if isinstance(self.ffn_activation, FfnActivation):
+            return self.ffn_activation
+        return FfnActivation(str(self.ffn_activation).lower().strip())
+
+    def get_head_dim(self) -> int:
+        return int(self.head_dim)
+
+    def has_share_expert(self) -> bool:
+        return bool(self.is_moe) and int(self.share_expert_dim) > 0
+
+
+@dataclass
+class ParallelConfig:
+    """Data / tensor / pipeline / expert parallelism.
+
+    ``tp_size`` remains the default; ``attn_tp_size`` / ``moe_tp_size`` override
+    when set (>0), matching Frontier's split attention vs MoE TP.
+    """
+
+    tp_size: int = 1
+    #: Frontier ``attn_tensor_parallel_size`` (0 → use ``tp_size``).
+    attn_tp_size: int = 0
+    #: Frontier ``moe_tensor_parallel_size`` (0 → use ``tp_size``).
+    moe_tp_size: int = 0
+    pp_size: int = 1
+    ep_size: int = 1
+    dp_size: int = 1
+    tp_comm_style: TpCommStyle | str = TpCommStyle.ALLREDUCE
+    #: Which PP stage this replica simulates (0 .. pp_size-1).
+    pp_stage: int = 0
+
+    def resolved_tp_comm_style(self) -> TpCommStyle:
+        if isinstance(self.tp_comm_style, TpCommStyle):
+            return self.tp_comm_style
+        return TpCommStyle(str(self.tp_comm_style).lower().strip())
+
+    def resolved_attn_tp(self) -> int:
+        return max(1, int(self.attn_tp_size) or int(self.tp_size))
+
+    def resolved_moe_tp(self) -> int:
+        return max(1, int(self.moe_tp_size) or int(self.tp_size))
+
+    def layers_on_stage(self, num_layers: int) -> int:
+        """Layers owned by ``pp_stage`` (even split, remainder on early stages)."""
+        pp = max(1, int(self.pp_size))
+        stage = max(0, min(int(self.pp_stage), pp - 1))
+        base, rem = divmod(int(num_layers), pp)
+        return base + (1 if stage < rem else 0)
+
+
+@dataclass
+class DeviceConfig:
+    """GPU compute / memory peaks for Roofline."""
+
+    #: Peak FLOP/s (e.g. A100 BF16 ≈ 312e12).
+    peak_flops: float = 312e12
+    #: HBM bandwidth in bytes/s (e.g. A100 ≈ 2.039e12).
+    hbm_bandwidth_bps: float = 2.039e12
+
+
+@dataclass
+class NetworkConfig:
+    """α-β interconnect model for collective / P2P communication."""
+
+    #: Fixed latency per collective / message (seconds).
+    alpha_s: float = 1e-6
+    #: Inverse bandwidth (seconds per byte).
+    beta_s_per_byte: float = 1.0 / (50e9 / 8.0)  # ~50 Gbps default
+
+    @classmethod
+    def from_bandwidth(
+        cls,
+        *,
+        latency_s: float = 1e-6,
+        bandwidth_gbps: float = 50.0,
+    ) -> NetworkConfig:
+        bps = float(bandwidth_gbps) * 1e9 / 8.0
+        return cls(alpha_s=float(latency_s), beta_s_per_byte=1.0 / bps)
+
+
+@dataclass
+class AnalyticalConfig:
+    """Bundle of configs required by OpWorkloadGenerator / OpAnalyzer."""
+
+    model: ModelConfig = field(default_factory=ModelConfig)
+    parallel: ParallelConfig = field(default_factory=ParallelConfig)
+    device: DeviceConfig = field(default_factory=DeviceConfig)
+    network: NetworkConfig = field(default_factory=NetworkConfig)
+    #: Optional global duration multiplier (set after offline calibration).
+    duration_scale: float = 1.0
+
+    @classmethod
+    def default(cls) -> AnalyticalConfig:
+        return cls()

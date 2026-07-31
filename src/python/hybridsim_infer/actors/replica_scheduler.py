@@ -64,6 +64,7 @@ class ReplicaSchedulerActor(ActorBase):
         frontier_cluster_type: Any = None,
         frontier_replica_id: int = 0,
         frontier_is_moe: bool = False,
+        analytical_config: Any = None,
         workload_generator: Optional[WorkloadGenerator] = None,
         profile: Any = None,
     ) -> None:
@@ -97,6 +98,7 @@ class ReplicaSchedulerActor(ActorBase):
                 frontier_cluster_type=frontier_cluster_type,
                 frontier_replica_id=frontier_replica_id,
                 frontier_is_moe=frontier_is_moe,
+                analytical_config=analytical_config,
             )
         )
 

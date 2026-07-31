@@ -24,13 +24,18 @@ def make_workload_generator(
     frontier_cluster_type: Any = None,
     frontier_replica_id: int = 0,
     frontier_is_moe: bool = False,
+    analytical_config: Any = None,
+    model_config: Any = None,
+    parallel_config: Any = None,
+    device_config: Any = None,
+    network_config: Any = None,
 ) -> WorkloadGenerator:
-    """Build a ``PredictWorkloadGenerator`` over a duration predictor.
+    """Build a workload generator.
 
     ``duration_mode``:
-      - ``fixed`` / ``token_proportional`` → built-in predictors
-      - ``predict`` → Frontier RF wrapper (requires Frontier + ``frontier_predictor``
-        or a ``FrontierBatchDurationPredictor`` as ``predictor``)
+      - ``fixed`` / ``token_proportional`` → ``PredictWorkloadGenerator`` + built-ins
+      - ``predict`` → Frontier RF wrapper (requires Frontier + ``frontier_predictor``)
+      - ``analytical`` → ``OpWorkloadGenerator`` (Roofline / α-β Operator DAG)
     """
     mode = (duration_mode or "fixed").lower().strip()
     if mode == "predict":
@@ -41,6 +46,14 @@ def make_workload_generator(
             frontier_replica_id=frontier_replica_id,
             frontier_is_moe=frontier_is_moe,
         )
+    if mode in ("analytical", "analytic", "op", "kernel_dag"):
+        return _make_analytical_workload_generator(
+            analytical_config=analytical_config,
+            model_config=model_config,
+            parallel_config=parallel_config,
+            device_config=device_config,
+            network_config=network_config,
+        )
 
     pred = predictor or make_predictor(
         duration_mode=duration_mode,
@@ -50,6 +63,36 @@ def make_workload_generator(
         base_s=duration_base_s,
     )
     return PredictWorkloadGenerator(pred)
+
+
+def _make_analytical_workload_generator(
+    *,
+    analytical_config: Any,
+    model_config: Any,
+    parallel_config: Any,
+    device_config: Any,
+    network_config: Any,
+) -> WorkloadGenerator:
+    from hybridsim_infer.workload_generators.analytic_model.configs import (
+        AnalyticalConfig,
+    )
+    from hybridsim_infer.workload_generators.op_workload_generator import (
+        OpWorkloadGenerator,
+    )
+
+    if isinstance(analytical_config, AnalyticalConfig):
+        return OpWorkloadGenerator(analytical=analytical_config)
+    if analytical_config is not None:
+        raise TypeError(
+            "analytical_config must be AnalyticalConfig or None, "
+            f"got {type(analytical_config)!r}"
+        )
+    return OpWorkloadGenerator(
+        model=model_config,
+        parallel=parallel_config,
+        device=device_config,
+        network=network_config,
+    )
 
 
 def _make_frontier_predict_workload_generator(

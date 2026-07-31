@@ -156,6 +156,7 @@ def build_inference_simulation(
             frontier_cluster_type=getattr(config, "frontier_cluster_type", None),
             frontier_replica_id=int(getattr(config, "frontier_replica_id", 0) or 0),
             frontier_is_moe=bool(getattr(config, "frontier_is_moe", False)),
+            analytical_config=getattr(config, "analytical_config", None),
             profile=profile_arg,
         )
         replicas.append(replica)

@@ -23,7 +23,7 @@ class InferenceConfig(SimulationConfig):
     step_interval: float = 1e-3
     #: Dummy TimeoutKernel duration when ``duration_mode="fixed"``.
     dummy_exec_s: float = 0.05
-    #: ``fixed``, ``token_proportional``, or ``predict`` (Frontier RF; needs Frontier).
+    #: ``fixed``, ``token_proportional``, ``predict`` (Frontier RF), or ``analytical``.
     duration_mode: str = "fixed"
     prefill_s_per_token: float = 1e-4
     decode_s_per_token: float = 1e-3
@@ -36,6 +36,8 @@ class InferenceConfig(SimulationConfig):
     frontier_predictor: object | None = None
     #: Injected Frontier ``ClusterType`` for ``predict`` mode (default MONOLITHIC).
     frontier_cluster_type: object | None = None
+    #: When ``duration_mode=analytical``: ``AnalyticalConfig`` (or None → defaults).
+    analytical_config: object | None = None
     #: Cap on tokens scheduled for one request's prefill chunk in a step.
     tokens_per_step: int = 8
     #: Decode tokens scheduled per request per step (vLLM-like default: 1).
