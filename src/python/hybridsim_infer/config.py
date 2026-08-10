@@ -38,6 +38,9 @@ class InferenceConfig(SimulationConfig):
     frontier_cluster_type: object | None = None
     #: When ``duration_mode=analytical``: ``AnalyticalConfig`` (or None → defaults).
     analytical_config: object | None = None
+    #: Optional model preset id (e.g. ``deepseek-v3``); injects ``ModelConfig`` into
+    #: analytical / KV transfer paths when ``analytical_config`` is unset or lacks model.
+    model_preset: str | None = None
     #: Cap on tokens scheduled for one request's prefill chunk in a step.
     tokens_per_step: int = 8
     #: Decode tokens scheduled per request per step (vLLM-like default: 1).
@@ -62,8 +65,10 @@ class InferenceConfig(SimulationConfig):
     kv_transfer_s: float = 1e-4
     #: Simulated interconnect bandwidth for KV pull/push duration.
     kv_bandwidth_gbps: float = 50.0
-    #: Bytes per token used when estimating transfer time.
+    #: Bytes per token used when estimating transfer time (fallback without model).
     kv_bytes_per_token: float = 16.0
+    #: Fixed latency α (seconds) for KV transfer α-β model.
+    kv_latency_s: float = 0.0
     #: Remote KV store capacity in blocks.
     kv_store_blocks: int = 4096
     #: Fire-and-forget Store lookup + ReplyMsg; pending ≈ vLLM ``None``.

@@ -107,11 +107,18 @@ def mla_attn_ops_for_phase(phase: BatchPhase) -> tuple[str, ...]:
     return MLA_ATTN_MIXED_OPS
 
 
+def dsa_attn_ops_for_phase(phase: BatchPhase) -> tuple[str, ...]:
+    """DSA ≈ MLA physical ops + indexer cache save (no sparse attn kernel)."""
+    return mla_attn_ops_for_phase(phase) + ("attn_indexer_cache_save",)
+
+
 def attn_ops_for_variant(
     variant: AttnVariant, phase: BatchPhase
 ) -> tuple[str, ...]:
     if variant is AttnVariant.MLA:
         return mla_attn_ops_for_phase(phase)
+    if variant is AttnVariant.DSA:
+        return dsa_attn_ops_for_phase(phase)
     # MHA / GQA / MQA share dense family.
     return dense_attn_ops_for_phase(phase)
 

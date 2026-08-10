@@ -6,7 +6,17 @@ from typing import Any, Callable, Literal, Optional
 
 from hybridsim_infer.kv_system.block_keys import block_aligned_tokens, block_keys_from_tokens
 from hybridsim_infer.messages import KVLookupMsg, KVLookupReplyMsg, KVUpdateMsg
-from hybridsim_infer.workload_generators.kv_transfer import KvTransferWorkloadGenerator
+from hybridsim_infer.workload_generators.analytic_model.configs import (
+    ModelConfig,
+    NetworkConfig,
+)
+from hybridsim_infer.workload_generators.analytic_model.kv_cache import (
+    bytes_per_token as model_bytes_per_token,
+)
+from hybridsim_infer.workload_generators.kv_transfer import (
+    KvTransferWorkloadGenerator,
+    transfer_duration_s,
+)
 
 TransferDirection = Literal["pull", "push"]
 
@@ -30,9 +40,12 @@ class KvClient:
         bandwidth_gbps: float = 50.0,
         bytes_per_token: float = 16.0,
         transfer_s_floor: float = 1e-4,
+        kv_latency_s: float = 0.0,
         lookup_rtt_s: float = 1e-3,
         on_transfer_complete: Callable[[int, int, str], None],
         workload_generator: Optional[KvTransferWorkloadGenerator] = None,
+        model_config: Optional[ModelConfig] = None,
+        network_config: Optional[NetworkConfig] = None,
         profile: Any = None,
         replica_id: int = 0,
     ) -> None:
@@ -45,9 +58,31 @@ class KvClient:
         self.bandwidth_gbps = float(bandwidth_gbps)
         self.bytes_per_token = float(bytes_per_token)
         self.transfer_s_floor = float(transfer_s_floor)
+        self.kv_latency_s = float(kv_latency_s)
         self.lookup_rtt_s = float(lookup_rtt_s)
+        self.model_config = model_config
+        self.network_config = network_config
         self._on_transfer_complete = on_transfer_complete
-        self._workload_generator = workload_generator or KvTransferWorkloadGenerator()
+        if workload_generator is not None:
+            self._workload_generator = workload_generator
+        else:
+            net = network_config
+            if net is None and (kv_latency_s > 0 or bandwidth_gbps > 0):
+                net = NetworkConfig.from_bandwidth(
+                    latency_s=kv_latency_s,
+                    bandwidth_gbps=bandwidth_gbps,
+                )
+            self._workload_generator = KvTransferWorkloadGenerator(
+                model=model_config,
+                network=net,
+                bytes_per_token=bytes_per_token,
+                bandwidth_gbps=bandwidth_gbps,
+                latency_s=kv_latency_s,
+                transfer_s_floor=transfer_s_floor,
+            )
+        # Prefer model-derived bytes/token when available (scalar fallback kept).
+        if model_config is not None:
+            self.bytes_per_token = float(model_bytes_per_token(model_config, num_tokens=1))
         self._inflight: dict[int, tuple[int, TransferDirection]] = {}
         self._lookup_cache: dict[int, dict[str, Any]] = {}
         self._next_workload_id = 1
@@ -68,9 +103,19 @@ class KvClient:
         self._engine.check_error()
 
     def transfer_duration_s(self, num_tokens: int) -> float:
-        nbytes = max(0, int(num_tokens)) * self.bytes_per_token
-        bps = max(1e-9, self.bandwidth_gbps) * (1e9 / 8.0)
-        return max(self.transfer_s_floor, nbytes / bps)
+        """α-β duration from model KV volume when set, else scalar bytes/token."""
+        gen = self._workload_generator
+        if hasattr(gen, "estimate_duration_s"):
+            return float(gen.estimate_duration_s(int(num_tokens)))
+        return transfer_duration_s(
+            num_tokens=int(num_tokens),
+            model=self.model_config,
+            bytes_per_token_fallback=self.bytes_per_token,
+            network=self.network_config,
+            bandwidth_gbps=self.bandwidth_gbps,
+            latency_s=self.kv_latency_s,
+            transfer_s_floor=self.transfer_s_floor,
+        )
 
     def control_plane_hit(
         self,

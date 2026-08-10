@@ -18,19 +18,37 @@ from hybridsim_infer.workload_generators.analytic_model.types import (
 )
 
 _IMPLEMENTED = frozenset(
-    {AttnVariant.MHA, AttnVariant.GQA, AttnVariant.MQA, AttnVariant.MLA}
+    {
+        AttnVariant.MHA,
+        AttnVariant.GQA,
+        AttnVariant.MQA,
+        AttnVariant.MLA,
+        AttnVariant.DSA,
+    }
 )
-_STUBBED = frozenset({AttnVariant.CSA, AttnVariant.HSA, AttnVariant.DSA})
+_STUBBED = frozenset({AttnVariant.CSA, AttnVariant.HSA})
 
 
 def ensure_attn_variant_supported(variant: AttnVariant) -> None:
     if variant in _STUBBED:
         raise NotImplementedError(
             f"Attention variant {variant.value!r} is registered as an extension "
-            "point but not implemented yet (supported: mha, gqa, mqa, mla)"
+            "point but not implemented yet (supported: mha, gqa, mqa, mla, dsa)"
         )
     if variant not in _IMPLEMENTED:
         raise ValueError(f"Unknown attention variant: {variant!r}")
+
+
+def _indexer_cache_save_cost(
+    model: ModelConfig, batch: BatchFeatures
+) -> dict[str, Any]:
+    """Roofline cost for DSA indexer key cache write (memory-bound)."""
+    s = max(0, int(batch.num_tokens))
+    idx_hd = max(0, int(getattr(model, "index_head_dim", 0) or 0))
+    idx_b = int(getattr(model, "index_dtype_bytes", 0) or 0) or max(
+        1, int(model.dtype_bytes)
+    )
+    return {"flops": 0.0, "bytes": float(idx_b * s * idx_hd)}
 
 
 def _dense_head_counts(
@@ -216,7 +234,10 @@ def make_attn_block_operators(
     op_names = attn_ops_for_variant(variant, batch.phase)
     ops: list[AttnOperator] = []
     for op_name in op_names:
-        if variant is AttnVariant.MLA:
+        if op_name == "attn_indexer_cache_save":
+            cost = _indexer_cache_save_cost(model, batch)
+        elif variant in (AttnVariant.MLA, AttnVariant.DSA):
+            # DSA reuses MLA physical op chain + indexer memory op.
             cost = _mla_cost_for_op(op=op_name, model=model, batch=batch, tp=tp)
         else:
             cost = _dense_cost_for_op(

@@ -44,6 +44,7 @@ class ReplicaSchedulerActor(ActorBase):
         kv_transfer_s: float = 1e-4,
         kv_bandwidth_gbps: float = 50.0,
         kv_bytes_per_token: float = 16.0,
+        kv_latency_s: float = 0.0,
         kv_lookup_async: bool = False,
         kv_lookup_rtt_s: float = 1e-3,
         tokens_per_step: int = 8,
@@ -119,6 +120,17 @@ class ReplicaSchedulerActor(ActorBase):
         # Homogeneous replicas: wire KvClient whenever a transfer engine is provided.
         # Store is optional (monolith/PD prefix pool); PD Decode uses control-plane lookup.
         if kv_engine is not None:
+            from hybridsim_infer.workload_generators.analytic_model.configs import (
+                NetworkConfig,
+            )
+
+            model_cfg = None
+            if analytical_config is not None and hasattr(analytical_config, "model"):
+                model_cfg = analytical_config.model
+            net_cfg = NetworkConfig.from_bandwidth(
+                latency_s=float(kv_latency_s),
+                bandwidth_gbps=float(kv_bandwidth_gbps),
+            )
             client = KvClient(
                 self,
                 kv_store,
@@ -127,8 +139,11 @@ class ReplicaSchedulerActor(ActorBase):
                 bandwidth_gbps=kv_bandwidth_gbps,
                 bytes_per_token=kv_bytes_per_token,
                 transfer_s_floor=kv_transfer_s,
+                kv_latency_s=kv_latency_s,
                 lookup_rtt_s=kv_lookup_rtt_s,
                 on_transfer_complete=self._on_kv_transfer_complete,
+                model_config=model_cfg,
+                network_config=net_cfg,
                 profile=self._profile,
                 replica_id=self.replica_id,
             )

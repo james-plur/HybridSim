@@ -10,6 +10,15 @@ from hybridsim_infer.workload_generators.analytic_model.configs import (
 from hybridsim_infer.workload_generators.analytic_model.dag_builder import (
     build_operator_dag,
 )
+from hybridsim_infer.workload_generators.analytic_model.kv_cache import (
+    bytes_per_token,
+    cache_bytes,
+)
+from hybridsim_infer.workload_generators.analytic_model.model_presets import (
+    list_presets,
+    load_model_config,
+    load_preset,
+)
 from hybridsim_infer.workload_generators.analytic_model.op_analyzer import (
     OpAnalyzer,
     critical_path_duration_s,
@@ -45,9 +54,14 @@ __all__ = [
     "OperatorKind",
     "ParallelConfig",
     "TpCommStyle",
+    "bytes_per_token",
     "build_operator_dag",
+    "cache_bytes",
     "critical_path_duration_s",
     "expected_layer_op_names",
+    "list_presets",
+    "load_model_config",
+    "load_preset",
     "strip_layer_prefix",
     "total_kernel_duration_s",
 ]

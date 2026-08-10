@@ -30,12 +30,33 @@ class ModelConfig:
     dtype_bytes: int = 2
     attn_variant: AttnVariant | str = AttnVariant.GQA
     ffn_activation: FfnActivation | str = FfnActivation.SILU
-    #: MLA latent dims (used when attn_variant=mla).
+    #: MLA latent dims (used when attn_variant=mla / dsa).
     q_lora_rank: int = 0
     kv_lora_rank: int = 512
     qk_nope_head_dim: int = 128
     qk_rope_head_dim: int = 64
     v_head_dim: int = 128
+    #: KV volume formula: ``standard_gqa`` | ``mla`` | ``dsa_mla`` | ``deepseek_v4_hybrid``.
+    kv_formula: str = ""
+    #: DSA / V4 indexer dims (unused for GQA/MLA).
+    index_head_dim: int = 0
+    index_n_heads: int = 0
+    index_topk: int = 0
+    #: IndexShare: every ``index_topk_freq`` layers share one indexer (0 → all layers).
+    index_topk_freq: int = 0
+    index_skip_topk_offset: int = 0
+    #: Indexer element size; 0 → use ``dtype_bytes``.
+    index_dtype_bytes: int = 0
+    #: Per-layer compress ratios for ``deepseek_v4_hybrid``.
+    compress_ratios: list[int] | None = None
+    #: Sliding-window width for V4 hybrid KV.
+    sliding_window: int = 0
+    #: Dense→MoE transition layer count (metadata; MoE ops still use ``is_moe``).
+    first_k_dense_replace: int = 0
+    #: Optional MTP / next-n draft layers (KV draft counted only if ``include_draft_kv``).
+    num_nextn_predict_layers: int = 0
+    #: When True, ``kv_cache.cache_bytes`` includes draft / MTP layers.
+    include_draft_kv: bool = False
     #: MoE (Frontier ``MoEModelConfig``).
     is_moe: bool = False
     num_experts: int = 1

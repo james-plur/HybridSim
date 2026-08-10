@@ -66,6 +66,29 @@ class InferenceSimulation:
         return getattr(self.profile, "output_path", None)
 
 
+def _resolve_analytical_config(config: InferenceConfig) -> Any:
+    """Inject ``model_preset`` into AnalyticalConfig when requested."""
+    analytical = getattr(config, "analytical_config", None)
+    preset = getattr(config, "model_preset", None)
+    if not preset:
+        return analytical
+    from hybridsim_infer.workload_generators.analytic_model.configs import (
+        AnalyticalConfig,
+    )
+    from hybridsim_infer.workload_generators.analytic_model.model_presets import (
+        load_preset,
+    )
+
+    model = load_preset(str(preset))
+    if analytical is None:
+        return AnalyticalConfig(model=model)
+    # Replace model on existing AnalyticalConfig when possible.
+    if hasattr(analytical, "model"):
+        analytical.model = model
+        return analytical
+    return AnalyticalConfig(model=model)
+
+
 def build_inference_simulation(
     config: InferenceConfig | None = None,
 ) -> InferenceSimulation:
@@ -86,6 +109,8 @@ def build_inference_simulation(
         )
     else:
         manager = MonolithClusterManager()
+
+    analytical_config = _resolve_analytical_config(config)
 
     profile = create_request_profile_session(
         enabled=bool(getattr(config, "enable_request_profile", False)),
@@ -143,6 +168,7 @@ def build_inference_simulation(
             kv_transfer_s=config.kv_transfer_s,
             kv_bandwidth_gbps=config.kv_bandwidth_gbps,
             kv_bytes_per_token=config.kv_bytes_per_token,
+            kv_latency_s=getattr(config, "kv_latency_s", 0.0),
             kv_lookup_async=config.kv_lookup_async,
             kv_lookup_rtt_s=config.kv_lookup_rtt_s,
             max_num_scheduled_tokens=config.max_num_scheduled_tokens,
@@ -156,7 +182,7 @@ def build_inference_simulation(
             frontier_cluster_type=getattr(config, "frontier_cluster_type", None),
             frontier_replica_id=int(getattr(config, "frontier_replica_id", 0) or 0),
             frontier_is_moe=bool(getattr(config, "frontier_is_moe", False)),
-            analytical_config=getattr(config, "analytical_config", None),
+            analytical_config=analytical_config,
             profile=profile_arg,
         )
         replicas.append(replica)

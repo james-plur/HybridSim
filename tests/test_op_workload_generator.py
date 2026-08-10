@@ -275,9 +275,11 @@ class TestVariants(unittest.TestCase):
             self.assertGreater(len(wl["kernels"]), 0)
 
     def test_stub_variants_raise(self) -> None:
-        for variant in (AttnVariant.CSA, AttnVariant.HSA, AttnVariant.DSA):
+        for variant in (AttnVariant.CSA, AttnVariant.HSA):
             with self.assertRaises(NotImplementedError):
                 ensure_attn_variant_supported(variant)
+        # DSA is implemented as MLA ops + indexer cache save.
+        ensure_attn_variant_supported(AttnVariant.DSA)
 
 
 class TestFactoryAnalytical(unittest.TestCase):
