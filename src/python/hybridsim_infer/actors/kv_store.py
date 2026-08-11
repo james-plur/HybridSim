@@ -76,11 +76,22 @@ class KvStoreActor(ActorBase):
         keys = list(msg.block_keys) if msg.block_keys else block_keys_from_tokens(
             list(msg.token_ids), self.block_size
         )
+        tpb = int(getattr(msg, "tokens_per_block", 0) or 0)
+        input_length = int(getattr(msg, "input_length", 0) or 0)
         if msg.token_ids and not msg.block_keys:
             aligned = block_aligned_tokens(len(msg.token_ids), self.block_size)
             max_blocks = aligned // self.block_size
             keys = keys[:max_blocks]
-        result = self.store.lookup_keys(keys, req_id=str(msg.request_id))
+            tpb = self.block_size
+            input_length = len(msg.token_ids)
+        elif tpb <= 0:
+            tpb = self.block_size
+        result = self.store.lookup_keys(
+            keys,
+            req_id=str(msg.request_id),
+            tokens_per_block=tpb,
+            input_length=input_length,
+        )
         if msg.async_reply and msg.reply_to is not None:
             msg.reply_to.send(
                 KVLookupReplyMsg,

@@ -48,3 +48,5 @@ class ScheduleResult:
     finished_cached: list[InferenceRequest] = field(default_factory=list)
     #: If True, Phase 2 stopped early after queuing a remote KV pull.
     stop_after_remote: bool = False
+    #: Local APC hit tokens applied this step (request_id → tokens).
+    prefix_hits: dict[int, int] = field(default_factory=dict)

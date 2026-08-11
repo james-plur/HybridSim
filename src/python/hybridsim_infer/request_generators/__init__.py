@@ -4,6 +4,10 @@ Orthogonal to ``workload_generators/`` (ScheduleBatch → TimeoutKernel).
 """
 
 from hybridsim_infer.request_generators.base import RequestGenerator
+from hybridsim_infer.request_generators.kvcache_trace_generator import (
+    KvCacheTraceRequestGenerator,
+    map_kvcache_trace_record,
+)
 from hybridsim_infer.request_generators.list_generator import ListRequestGenerator
 from hybridsim_infer.request_generators.servegen_generator import (
     ServeGenRequestGenerator,
@@ -11,8 +15,10 @@ from hybridsim_infer.request_generators.servegen_generator import (
 )
 
 __all__ = [
+    "KvCacheTraceRequestGenerator",
     "ListRequestGenerator",
     "RequestGenerator",
     "ServeGenRequestGenerator",
+    "map_kvcache_trace_record",
     "map_servegen_request",
 ]

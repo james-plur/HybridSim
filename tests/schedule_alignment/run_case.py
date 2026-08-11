@@ -86,6 +86,7 @@ def main(argv: list[str] | None = None) -> int:
             hs_records,
             left_name="expected",
             right_name="hybridsim",
+            compare_kv=bool(case.scheduler.get("enable_prefix_caching", False)),
         )
         print(report.summary())
         if not report.equal:
@@ -113,6 +114,7 @@ def main(argv: list[str] | None = None) -> int:
             hs_records,
             left_name="vllm",
             right_name="hybridsim",
+            compare_kv=bool(case.scheduler.get("enable_prefix_caching", False)),
         )
         print(report.summary())
         if not report.equal:

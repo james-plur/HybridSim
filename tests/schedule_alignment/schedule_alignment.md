@@ -9,6 +9,22 @@
 | Replica 内 `schedule()` 语义 | Cluster → Replica 分发 |
 | 每步 `scheduled_tokens` / preempt / finish | 真实 GPU / CUDA kernel |
 | 本地 KV 块预算与 OOM 抢占 | Mooncake / 远程 KV 传输时序细节 |
+| 开启 APC 时逐步 `free_blocks` / `allocated_blocks` / `prefix_hit_tokens` | 公开 remapped `hash_ids` 与 vLLM hasher 混比 |
+
+对照骨架：
+
+```text
+arrive → waiting
+schedule_step:
+  Phase1 running: chunk/decode → allocate(computed+new)
+                 fail → FCFS preempt (可自抢占) → 跳过 Phase2
+  Phase2 waiting: [prefix match] → [remote_lookup 可选]
+                 → reserve_full_isl can_fit(num_tokens)
+                 → allocate(chunk) → running
+on_batch_complete / update_from_output: 推进 computed/output；finish → free (+ cache prefix)
+```
+
+DES/`ReplicaSchedulerActor` 与 offline driver 共用 `schedule_step`。
 
 ---
 
@@ -162,14 +178,20 @@ hybridsim 用 `on_batch_complete` 收拢（driver 与 `ReplicaSchedulerActor.on_
 2. 若本步刚完成 prefill 且仍有 decode 配额：`num_output_tokens += 1`，并为 finished 检测再 `computed += 1`  
 3. `num_tokens = num_prefill + num_output` 供后续 full-ISL；**preempt 不重置 `num_output_tokens`**（与 vLLM 输出仍留在 request 上一致）
 
-### 3.7 Prefix caching
+### 3.7 Prefix caching / APC
 
 | | vLLM | hybridsim |
 |--|------|-----------|
 | 默认 | APC 需显式开启 | `enable_prefix_caching=False` |
-| 实现 | block hash / APC | token-list 最长前缀（非 APC） |
+| 实现 | block hash 表（`get_request_block_hasher` + `get_computed_blocks`） | 同款 block-hash 链：`resolve_block_keys` / `block_keys_from_tokens`（`PYTHONHASHSEED=0`） |
+| `hash_ids` | 不适用（本 harness 用 token） | 有 `hash_ids` 时优先用 trace keys；alignment case 不传 |
 
-校准 case（如 `local_prefix`）两侧默认关缓存，保证「同 prompt 也全量 prefill」一致。HS 本地前缀仅作可选仿真能力，**不声称与 vLLM APC 字节级对齐**。
+校准基线 case（如 `local_prefix`）两侧默认关缓存，保证「同 prompt 也全量 prefill」一致。  
+开启缓存的 case（`local_prefix_hit` / `local_prefix_partial`）逐步比对 `prefix_hit_tokens` / `free_blocks` / `allocated_blocks`。
+
+APC 命中上限与 vLLM 一致：`max_cache_hit_length = prompt_len - 1`，再按 `block_size` 向下对齐（全命中时仍需重算最后 token 取 logits，可能丢掉整尾块）。
+
+**不**用公开 remapped `hash_ids` trace 直接与 vLLM APC hasher 对比（hasher 不同）；本校准用同一 `prompt_token_ids` + 同款 block hash。
 
 ### 3.8 配置旋钮对照
 
@@ -216,11 +238,13 @@ hybridsim 用 `on_batch_complete` 收拢（driver 与 `ReplicaSchedulerActor.on_
 - `preempted_ids`
 - `finished_ids`
 
-（可选 `compare_queues` 比 waiting/running。）
+（可选 `compare_queues` 比 waiting/running；`compare_kv=True` 时比 `free_blocks` / `allocated_blocks` / `prefix_hit_tokens`，prefix case 默认开启。）
 
 CLI：`PYTHONPATH=src/python:tests:. python -m schedule_alignment.run_case --case <name>`（默认要求 vLLM）。
 
 测试：`tests/test_schedule_alignment.py`（每个 case 为 `subTest`：expected golden + vLLM compare）。
+
+报告：[`TEST_REPORT.md`](TEST_REPORT.md)。
 
 ### 4.5 当前覆盖 case
 
@@ -232,6 +256,8 @@ CLI：`PYTHONPATH=src/python:tests:. python -m schedule_alignment.run_case --cas
 | `budget_exhaust` | token budget 耗尽 |
 | `preempt_oom` | null block + full-ISL + 自抢占 |
 | `local_prefix` | 关缓存时两侧全量 prefill |
+| `local_prefix_hit` | 整块共享前缀 APC hit + 调度 token 减少 |
+| `local_prefix_partial` | 非整块对齐前缀只计 full blocks |
 
 ---
 
@@ -251,7 +277,8 @@ CLI：`PYTHONPATH=src/python:tests:. python -m schedule_alignment.run_case --cas
 
 ## 6. 已知差距（有意不声称对齐）
 
-- **APC / Store block hash**：本地 6 case 默认不启 Store；Mooncake 池 profile 与 vLLM 兼容 hash 见 `tests/mooncake_alignment/`  
+- **Store / Mooncake 远程时序**：见 `tests/mooncake_alignment/`；本 harness 不启 Store  
+- **公开 `hash_ids` trace vs vLLM APC hasher**：hasher 不同，不直接混比  
 - **Spec decode / LoRA / encoder budget / watermark>0**：未建模  
 - **`num_computed` vs `num_tokens`**：HS 用 `computed`+`output` 近似；finished 条件用 `computed >= prefill+decode`  
 - **Cluster 负载均衡、真实执行时长**：不在本校准范围；时长可用 `TokenProportionalPredictor` 假执行  

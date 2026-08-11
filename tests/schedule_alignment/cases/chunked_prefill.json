@@ -1,0 +1,22 @@
+{
+  "name": "chunked_prefill",
+  "description": "Single long prefill chunked by tokens_per_step / long_prefill threshold",
+  "scheduler": {
+    "max_num_scheduled_tokens": 64,
+    "max_num_running_reqs": 8,
+    "tokens_per_step": 8,
+    "decode_tokens_per_step": 1,
+    "long_prefill_token_threshold": 8,
+    "num_gpu_blocks": 256,
+    "block_size": 16
+  },
+  "requests": [
+    {
+      "request_id": "1",
+      "arrive_step": 0,
+      "num_prefill_tokens": 24,
+      "num_decode_tokens": 3,
+      "prompt_base": 100
+    }
+  ]
+}

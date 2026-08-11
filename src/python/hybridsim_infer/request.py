@@ -26,6 +26,11 @@ class InferenceRequest:
     num_output_tokens: int = 0
     #: Prompt token ids used for local/remote prefix match. Empty → synthetic ids.
     prompt_token_ids: list[int] = field(default_factory=list)
+    #: Optional precomputed prefix-cache block identities (kvcache-simulator / Mooncake).
+    #: When set, Store lookup/save can use these keys directly instead of hashing tokens.
+    hash_ids: list[int] = field(default_factory=list)
+    #: Optional block size associated with ``hash_ids`` (e.g. 16 / 64 / 512).
+    block_size: int = 0
     status: RequestStatus = RequestStatus.WAITING
     completed: bool = False
     #: Tokens expected from an in-flight remote KV pull.
@@ -38,6 +43,10 @@ class InferenceRequest:
     lookup_result: Optional[dict] = None
 
     def __post_init__(self) -> None:
+        # hash_ids traces already carry block identity; skip unique fake prompts
+        # that would destroy Store / local APC sharing.
+        if self.hash_ids:
+            return
         if not self.prompt_token_ids and self.num_prefill_tokens > 0:
             # Stable synthetic prompt for prefix-cache demos.
             self.prompt_token_ids = [

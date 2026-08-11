@@ -39,8 +39,14 @@ class CompareReport:
         for d in self.diffs[:20]:
             lines.append(f"  step={d.step} {d.field}: {d.left!r} != {d.right!r}")
         if len(self.diffs) > 20:
-            lines.append(f"  ... and {len(self.diffs) - 20} more")
+            lines.append(f"  ... and {self.diffs.__len__() - 20} more")
         return "\n".join(lines)
+
+
+def _norm_int_map(d: dict[str, int] | None) -> dict[str, int]:
+    if not d:
+        return {}
+    return {str(k): int(v) for k, v in d.items()}
 
 
 def compare_ledgers(
@@ -51,6 +57,7 @@ def compare_ledgers(
     right_name: str = "right",
     drop_empty: bool = True,
     compare_queues: bool = False,
+    compare_kv: bool = False,
 ) -> CompareReport:
     a = filter_nonempty(left) if drop_empty else list(left)
     b = filter_nonempty(right) if drop_empty else list(right)
@@ -84,6 +91,25 @@ def compare_ledgers(
             if sorted(la.running_ids) != sorted(rb.running_ids):
                 diffs.append(
                     StepDiff(i, "running_ids", la.running_ids, rb.running_ids)
+                )
+        if compare_kv:
+            # Missing free_blocks on either side → skip that field (legacy ledgers).
+            if la.free_blocks is not None and rb.free_blocks is not None:
+                if int(la.free_blocks) != int(rb.free_blocks):
+                    diffs.append(
+                        StepDiff(i, "free_blocks", la.free_blocks, rb.free_blocks)
+                    )
+            la_alloc = _norm_int_map(la.allocated_blocks)
+            rb_alloc = _norm_int_map(rb.allocated_blocks)
+            if la_alloc != rb_alloc:
+                diffs.append(
+                    StepDiff(i, "allocated_blocks", la_alloc, rb_alloc)
+                )
+            la_hit = _norm_int_map(la.prefix_hit_tokens)
+            rb_hit = _norm_int_map(rb.prefix_hit_tokens)
+            if la_hit != rb_hit:
+                diffs.append(
+                    StepDiff(i, "prefix_hit_tokens", la_hit, rb_hit)
                 )
     return CompareReport(
         left_name=left_name,

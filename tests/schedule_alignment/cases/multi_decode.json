@@ -1,0 +1,36 @@
+{
+  "name": "multi_decode",
+  "description": "Multiple requests decoding concurrently under token budget",
+  "scheduler": {
+    "max_num_scheduled_tokens": 8,
+    "max_num_running_reqs": 4,
+    "tokens_per_step": 16,
+    "decode_tokens_per_step": 1,
+    "long_prefill_token_threshold": 16,
+    "num_gpu_blocks": 256,
+    "block_size": 16
+  },
+  "requests": [
+    {
+      "request_id": "1",
+      "arrive_step": 0,
+      "num_prefill_tokens": 4,
+      "num_decode_tokens": 4,
+      "prompt_base": 10
+    },
+    {
+      "request_id": "2",
+      "arrive_step": 0,
+      "num_prefill_tokens": 4,
+      "num_decode_tokens": 4,
+      "prompt_base": 20
+    },
+    {
+      "request_id": "3",
+      "arrive_step": 0,
+      "num_prefill_tokens": 4,
+      "num_decode_tokens": 4,
+      "prompt_base": 30
+    }
+  ]
+}

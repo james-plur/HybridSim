@@ -1,0 +1,31 @@
+{
+  "name": "local_prefix_hit",
+  "description": "Two requests share a full-block prompt prefix; enable_prefix_caching so 2nd request APC-hits and schedules fewer prefill tokens.",
+  "scheduler": {
+    "max_num_scheduled_tokens": 64,
+    "max_num_running_reqs": 8,
+    "tokens_per_step": 16,
+    "decode_tokens_per_step": 1,
+    "long_prefill_token_threshold": 16,
+    "num_gpu_blocks": 256,
+    "block_size": 16,
+    "enable_prefix_caching": true,
+    "reserve_full_isl": true
+  },
+  "requests": [
+    {
+      "request_id": "1",
+      "arrive_step": 0,
+      "num_prefill_tokens": 32,
+      "num_decode_tokens": 2,
+      "prompt_token_ids": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
+    },
+    {
+      "request_id": "2",
+      "arrive_step": 4,
+      "num_prefill_tokens": 32,
+      "num_decode_tokens": 2,
+      "prompt_token_ids": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
+    }
+  ]
+}

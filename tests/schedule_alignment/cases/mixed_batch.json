@@ -1,0 +1,29 @@
+{
+  "name": "mixed_batch",
+  "description": "Running decode + new waiting prefill in same / adjacent steps",
+  "scheduler": {
+    "max_num_scheduled_tokens": 32,
+    "max_num_running_reqs": 8,
+    "tokens_per_step": 8,
+    "decode_tokens_per_step": 1,
+    "long_prefill_token_threshold": 8,
+    "num_gpu_blocks": 256,
+    "block_size": 16
+  },
+  "requests": [
+    {
+      "request_id": "1",
+      "arrive_step": 0,
+      "num_prefill_tokens": 8,
+      "num_decode_tokens": 5,
+      "prompt_base": 1
+    },
+    {
+      "request_id": "2",
+      "arrive_step": 2,
+      "num_prefill_tokens": 8,
+      "num_decode_tokens": 2,
+      "prompt_base": 50
+    }
+  ]
+}

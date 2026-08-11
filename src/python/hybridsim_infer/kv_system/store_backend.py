@@ -9,7 +9,10 @@ from abc import ABC, abstractmethod
 from collections import OrderedDict
 from typing import Any, Callable, Optional
 
-from hybridsim_infer.kv_system.block_keys import block_keys_from_tokens
+from hybridsim_infer.kv_system.block_keys import (
+    block_keys_from_tokens,
+    prefix_hit_tokens,
+)
 
 PoolEventFn = Callable[..., None]
 
@@ -21,7 +24,14 @@ class KvStoreBackend(ABC):
     num_blocks: int
 
     @abstractmethod
-    def lookup_keys(self, keys: list[str], *, req_id: str = "") -> dict[str, Any]:
+    def lookup_keys(
+        self,
+        keys: list[str],
+        *,
+        req_id: str = "",
+        tokens_per_block: int = 0,
+        input_length: int = 0,
+    ) -> dict[str, Any]:
         """Longest contiguous prefix hit. Emits ``exist``."""
 
     @abstractmethod
@@ -116,7 +126,14 @@ class MooncakeKvStore(KvStoreBackend):
         keys = block_keys_from_tokens(token_ids, self.block_size)
         self.insert_keys(keys, req_id="seed")
 
-    def lookup_keys(self, keys: list[str], *, req_id: str = "") -> dict[str, Any]:
+    def lookup_keys(
+        self,
+        keys: list[str],
+        *,
+        req_id: str = "",
+        tokens_per_block: int = 0,
+        input_length: int = 0,
+    ) -> dict[str, Any]:
         hit_blocks = 0
         hit_mask: list[bool] = []
         for key in keys:
@@ -126,7 +143,8 @@ class MooncakeKvStore(KvStoreBackend):
                 break
             self._blocks.move_to_end(key)
             hit_blocks += 1
-        num_tokens = hit_blocks * self.block_size
+        tpb = int(tokens_per_block) if int(tokens_per_block) > 0 else self.block_size
+        num_tokens = prefix_hit_tokens(hit_blocks, int(input_length or 0), tpb)
         self._emit(
             "exist",
             keys[: max(hit_blocks, 0)],

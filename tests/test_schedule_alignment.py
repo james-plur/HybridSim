@@ -23,6 +23,10 @@ from schedule_alignment.vllm_schedule_driver import run_vllm_schedule, vllm_avai
 _CASES_DIR = _TESTS / "schedule_alignment" / "cases"
 
 
+def _compare_kv_for(case) -> bool:
+    return bool((case.scheduler or {}).get("enable_prefix_caching", False))
+
+
 class TestScheduleAlignmentExpected(unittest.TestCase):
     """Each case ledger must match the checked-in expected golden."""
 
@@ -40,6 +44,7 @@ class TestScheduleAlignmentExpected(unittest.TestCase):
                     got,
                     left_name="expected",
                     right_name="hybridsim",
+                    compare_kv=_compare_kv_for(case),
                 )
                 self.assertTrue(report.equal, msg=report.summary())
 
@@ -52,6 +57,7 @@ class TestScheduleAlignmentVllm(unittest.TestCase):
         os.environ.setdefault("HF_HUB_OFFLINE", "1")
         os.environ.setdefault("VLLM_TARGET_DEVICE", "cpu")
         os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+        os.environ.setdefault("PYTHONHASHSEED", "0")
 
     def test_vllm_available(self) -> None:
         self.assertTrue(
@@ -72,7 +78,11 @@ class TestScheduleAlignmentVllm(unittest.TestCase):
                 hs = run_hybridsim_schedule(case)
                 vllm = run_vllm_schedule(case)
                 report = compare_ledgers(
-                    vllm, hs, left_name="vllm", right_name="hybridsim"
+                    vllm,
+                    hs,
+                    left_name="vllm",
+                    right_name="hybridsim",
+                    compare_kv=_compare_kv_for(case),
                 )
                 self.assertTrue(report.equal, msg=report.summary())
 

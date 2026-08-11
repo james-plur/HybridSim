@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from typing import Any, Callable, Literal, Optional
 
-from hybridsim_infer.kv_system.block_keys import block_aligned_tokens, block_keys_from_tokens
+from hybridsim_infer.kv_system.block_keys import (
+    block_aligned_tokens,
+    prefix_hit_tokens,
+    resolve_block_keys,
+)
 from hybridsim_infer.messages import KVLookupMsg, KVLookupReplyMsg, KVUpdateMsg
 from hybridsim_infer.workload_generators.analytic_model.configs import (
     ModelConfig,
@@ -122,13 +126,17 @@ class KvClient:
         token_ids: list[int],
         *,
         location: Any,
+        num_tokens: int | None = None,
+        block_size: int = 0,
     ) -> dict[str, Any]:
         """Full prompt as hit without Store hash match (Prefill GPU known)."""
-        num_tokens = block_aligned_tokens(len(token_ids), self.block_size)
+        bs = int(block_size) if int(block_size) > 0 else self.block_size
+        n = int(num_tokens) if num_tokens is not None else len(token_ids)
+        aligned = block_aligned_tokens(n, bs)
         return {
-            "hit": num_tokens > 0,
-            "num_tokens": num_tokens,
-            "num_blocks": num_tokens // self.block_size if self.block_size else 0,
+            "hit": aligned > 0,
+            "num_tokens": aligned,
+            "num_blocks": aligned // bs if bs else 0,
             "location": location,
             "mode": "control_plane",
         }
@@ -139,9 +147,16 @@ class KvClient:
         token_ids: list[int],
         *,
         location: Any,
+        num_tokens: int | None = None,
+        block_size: int = 0,
     ) -> dict[str, Any]:
         """Fire delayed control-plane reply (RTT); caller treats as pending."""
-        result = self.control_plane_hit(token_ids, location=location)
+        result = self.control_plane_hit(
+            token_ids,
+            location=location,
+            num_tokens=num_tokens,
+            block_size=block_size,
+        )
         self._owner.send(
             KVLookupReplyMsg,
             delay=self.lookup_rtt_s,
@@ -167,11 +182,57 @@ class KvClient:
         self._lookup_cache[int(msg.request_id)] = result
         return result
 
-    async def lookup(self, request_id: int, token_ids: list[int]) -> dict[str, Any]:
+    def _effective_block_size(self, block_size: int = 0) -> int:
+        return int(block_size) if int(block_size) > 0 else self.block_size
+
+    def keys_for_prompt(
+        self,
+        *,
+        token_ids: list[int] | None = None,
+        hash_ids: list[int] | None = None,
+        block_size: int = 0,
+        num_tokens: int | None = None,
+        input_length: int | None = None,
+    ) -> tuple[list[str], int, int]:
+        """Return ``(block_keys, tokens_per_block, input_length)`` for Store RPC."""
+        bs = self._effective_block_size(block_size)
+        tokens = list(token_ids or [])
+        hashes = list(hash_ids or [])
+        il = int(input_length) if input_length is not None else (
+            int(num_tokens) if num_tokens is not None else len(tokens)
+        )
+        if il <= 0 and tokens:
+            il = len(tokens)
+        n = int(num_tokens) if num_tokens is not None else il
+        keys = resolve_block_keys(
+            token_ids=tokens or None,
+            hash_ids=hashes or None,
+            block_size=bs,
+            num_tokens=n if n > 0 else None,
+            input_length=il if il > 0 else None,
+        )
+        return keys, bs, il
+
+    async def lookup(
+        self,
+        request_id: int,
+        token_ids: list[int],
+        *,
+        hash_ids: list[int] | None = None,
+        block_size: int = 0,
+        num_tokens: int | None = None,
+        input_length: int | None = None,
+    ) -> dict[str, Any]:
         """Sync metadata lookup on master (block-aligned hit length)."""
         if self._store is None:
-            return {"hit": False, "num_tokens": 0}
-        keys = block_keys_from_tokens(token_ids, self.block_size)
+            return {"hit": False, "num_tokens": 0, "num_blocks": 0}
+        keys, tpb, il = self.keys_for_prompt(
+            token_ids=token_ids,
+            hash_ids=hash_ids,
+            block_size=block_size,
+            num_tokens=num_tokens,
+            input_length=input_length,
+        )
         return await self._owner.request(
             self._store,
             KVLookupMsg,
@@ -180,9 +241,20 @@ class KvClient:
             request_id=int(request_id),
             async_reply=False,
             reply_to=None,
+            tokens_per_block=tpb,
+            input_length=il,
         )
 
-    def lookup_async(self, request_id: int, token_ids: list[int]) -> None:
+    def lookup_async(
+        self,
+        request_id: int,
+        token_ids: list[int],
+        *,
+        hash_ids: list[int] | None = None,
+        block_size: int = 0,
+        num_tokens: int | None = None,
+        input_length: int | None = None,
+    ) -> None:
         """Fire-and-forget lookup; result arrives as ``KVLookupReplyMsg`` on owner."""
         if self._store is None:
             # No store: synthesize an immediate miss reply on the owner.
@@ -195,7 +267,13 @@ class KvClient:
                 num_blocks=0,
             )
             return
-        keys = block_keys_from_tokens(token_ids, self.block_size)
+        keys, tpb, il = self.keys_for_prompt(
+            token_ids=token_ids,
+            hash_ids=hash_ids,
+            block_size=block_size,
+            num_tokens=num_tokens,
+            input_length=input_length,
+        )
         self._store.send(
             KVLookupMsg,
             delay=self.lookup_rtt_s,
@@ -204,22 +282,47 @@ class KvClient:
             request_id=int(request_id),
             async_reply=True,
             reply_to=self._owner,
+            tokens_per_block=tpb,
+            input_length=il,
         )
 
-    async def save(self, request_id: int, token_ids: list[int]) -> dict[str, Any]:
+    async def save(
+        self,
+        request_id: int,
+        token_ids: list[int],
+        *,
+        hash_ids: list[int] | None = None,
+        block_size: int = 0,
+        num_tokens: int | None = None,
+        input_length: int | None = None,
+    ) -> dict[str, Any]:
         """Sync metadata update on master; caller may then ``submit_push``."""
         if self._store is None:
             return {"ok": False, "reason": "no_store"}
-        keys = block_keys_from_tokens(token_ids, self.block_size)
+        keys, tpb, il = self.keys_for_prompt(
+            token_ids=token_ids,
+            hash_ids=hash_ids,
+            block_size=block_size,
+            num_tokens=num_tokens if num_tokens is not None else len(token_ids),
+            input_length=input_length,
+        )
         if not keys:
             return {"ok": False, "reason": "empty"}
-        return await self._owner.request(
+        reply = await self._owner.request(
             self._store,
             KVUpdateMsg,
             token_ids=list(token_ids),
             block_keys=keys,
             request_id=int(request_id),
+            tokens_per_block=tpb,
         )
+        # Prefer token accounting from the keys we inserted when using trace blocks.
+        if reply and reply.get("ok") and tpb > 0:
+            n_blocks = int(reply.get("num_blocks", len(keys)) or len(keys))
+            reply = dict(reply)
+            reply["num_tokens"] = prefix_hit_tokens(n_blocks, il or n_blocks * tpb, tpb)
+            reply["num_blocks"] = n_blocks
+        return reply
 
     def after_alloc_load(
         self,

@@ -1,8 +1,0 @@
-{"step": 0, "scheduled_tokens": {"1": 16}, "new_req_ids": ["1"], "preempted_ids": [], "finished_ids": [], "waiting_ids": ["2"], "running_ids": ["1"]}
-{"step": 1, "scheduled_tokens": {"1": 16}, "new_req_ids": [], "preempted_ids": [], "finished_ids": [], "waiting_ids": ["2"], "running_ids": ["1"]}
-{"step": 2, "scheduled_tokens": {}, "new_req_ids": [], "preempted_ids": ["1"], "finished_ids": [], "waiting_ids": ["1", "2"], "running_ids": []}
-{"step": 3, "scheduled_tokens": {}, "new_req_ids": [], "preempted_ids": [], "finished_ids": [], "waiting_ids": ["1", "2"], "running_ids": []}
-{"step": 4, "scheduled_tokens": {}, "new_req_ids": [], "preempted_ids": [], "finished_ids": [], "waiting_ids": ["1", "2"], "running_ids": []}
-{"step": 5, "scheduled_tokens": {}, "new_req_ids": [], "preempted_ids": [], "finished_ids": [], "waiting_ids": ["1", "2"], "running_ids": []}
-{"step": 6, "scheduled_tokens": {}, "new_req_ids": [], "preempted_ids": [], "finished_ids": [], "waiting_ids": ["1", "2"], "running_ids": []}
-{"step": 7, "scheduled_tokens": {}, "new_req_ids": [], "preempted_ids": [], "finished_ids": [], "waiting_ids": ["1", "2"], "running_ids": []}

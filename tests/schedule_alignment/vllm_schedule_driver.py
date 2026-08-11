@@ -55,6 +55,8 @@ def run_vllm_schedule(case) -> list:
     # Stay offline unless user explicitly allows downloads.
     os.environ.setdefault("HF_HUB_OFFLINE", "1")
     os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+    # Align NONE_HASH / block hashes with hybridsim block_keys.
+    os.environ.setdefault("PYTHONHASHSEED", "0")
 
     import torch
     from vllm.config import (
@@ -286,6 +288,19 @@ def run_vllm_schedule(case) -> list:
         else:
             prev_waiting_preempted = set(preempted_ids)
 
+        # Local APC hit for newly admitted requests:
+        # after schedule(), num_computed_tokens == prefix_hit + scheduled.
+        prefix_hits: dict[str, int] = {}
+        if bool(s.get("enable_prefix_caching", False)):
+            for rid in new_ids:
+                req = live.get(rid)
+                if req is None:
+                    continue
+                sched_n = int(scheduled.get(rid, 0))
+                hit = max(0, int(req.num_computed_tokens) - sched_n)
+                if hit > 0:
+                    prefix_hits[rid] = hit
+
         finished_before = {
             rid for rid, req in live.items() if req.is_finished()
         }
@@ -297,6 +312,26 @@ def run_vllm_schedule(case) -> list:
         # Only newly finished this step (not cumulative scheduler set).
         finished_ids = sorted(finished_after - finished_before)
 
+        free_blocks = int(
+            scheduler.kv_cache_manager.block_pool.get_num_free_blocks()
+        )
+        allocated_blocks: dict[str, int] = {}
+        for rid, req in live.items():
+            if req.is_finished():
+                continue
+            try:
+                blocks = scheduler.kv_cache_manager.get_blocks(rid)
+                ids = blocks.get_block_ids()
+                # get_block_ids returns tuple of lists (one per kv group)
+                if ids and isinstance(ids[0], (list, tuple)):
+                    n_blocks = len(ids[0])
+                else:
+                    n_blocks = len(ids) if ids else 0
+            except Exception:
+                n_blocks = 0
+            if n_blocks > 0:
+                allocated_blocks[str(rid)] = n_blocks
+
         records.append(
             ScheduleStepRecord(
                 step=step,
@@ -306,6 +341,9 @@ def run_vllm_schedule(case) -> list:
                 finished_ids=finished_ids,
                 waiting_ids=_queue_ids(scheduler.waiting),
                 running_ids=_queue_ids(scheduler.running),
+                free_blocks=free_blocks,
+                allocated_blocks=allocated_blocks,
+                prefix_hit_tokens=prefix_hits,
             )
         )
 

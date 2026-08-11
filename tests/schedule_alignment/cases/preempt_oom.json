@@ -1,0 +1,29 @@
+{
+  "name": "preempt_oom",
+  "description": "Tiny KV capacity: admit one long prefill, OOM/preempt on second",
+  "scheduler": {
+    "max_num_scheduled_tokens": 64,
+    "max_num_running_reqs": 8,
+    "tokens_per_step": 16,
+    "decode_tokens_per_step": 1,
+    "long_prefill_token_threshold": 16,
+    "num_gpu_blocks": 3,
+    "block_size": 16
+  },
+  "requests": [
+    {
+      "request_id": "1",
+      "arrive_step": 0,
+      "num_prefill_tokens": 32,
+      "num_decode_tokens": 4,
+      "prompt_base": 11
+    },
+    {
+      "request_id": "2",
+      "arrive_step": 0,
+      "num_prefill_tokens": 32,
+      "num_decode_tokens": 4,
+      "prompt_base": 22
+    }
+  ]
+}

@@ -60,6 +60,9 @@ class KVLookupMsg:
     request_id: int = 0
     async_reply: bool = False
     reply_to: Any = None
+    #: Token accounting for external ``block_keys`` (trace block_size). 0 → store default.
+    tokens_per_block: int = 0
+    input_length: int = 0
 
 
 @dataclass
@@ -78,6 +81,7 @@ class KVUpdateMsg:
     token_ids: list[int] = field(default_factory=list)
     block_keys: list[str] = field(default_factory=list)
     request_id: int = 0
+    tokens_per_block: int = 0
 
 
 INFER_MESSAGE_TYPES: tuple[type, ...] = (

@@ -1,0 +1,36 @@
+{
+  "name": "budget_exhaust",
+  "description": "Phase1 decode consumes full token budget; waiting not admitted same step",
+  "scheduler": {
+    "max_num_scheduled_tokens": 4,
+    "max_num_running_reqs": 4,
+    "tokens_per_step": 8,
+    "decode_tokens_per_step": 1,
+    "long_prefill_token_threshold": 8,
+    "num_gpu_blocks": 256,
+    "block_size": 16
+  },
+  "requests": [
+    {
+      "request_id": "1",
+      "arrive_step": 0,
+      "num_prefill_tokens": 2,
+      "num_decode_tokens": 6,
+      "prompt_base": 7
+    },
+    {
+      "request_id": "2",
+      "arrive_step": 0,
+      "num_prefill_tokens": 2,
+      "num_decode_tokens": 6,
+      "prompt_base": 8
+    },
+    {
+      "request_id": "3",
+      "arrive_step": 3,
+      "num_prefill_tokens": 8,
+      "num_decode_tokens": 1,
+      "prompt_base": 9
+    }
+  ]
+}

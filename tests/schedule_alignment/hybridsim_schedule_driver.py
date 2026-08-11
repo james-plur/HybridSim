@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import Any
 
 from hybridsim_infer.frameworks import FrameworkFactory
@@ -54,6 +55,14 @@ def _make_request(spec) -> InferenceRequest:
 
 
 def run_hybridsim_schedule(case: CaseSpec) -> list[ScheduleStepRecord]:
+    # Align NONE_HASH with vLLM sha256 hasher when APC is on.
+    os.environ.setdefault("PYTHONHASHSEED", "0")
+    try:
+        from hybridsim_infer.kv_system.block_keys import reset_none_hash
+
+        reset_none_hash()
+    except Exception:
+        pass
     return asyncio.run(_run_hybridsim_schedule_async(case))
 
 
@@ -126,6 +135,11 @@ async def _run_hybridsim_schedule_async(case: CaseSpec) -> list[ScheduleStepReco
         for r in result.finished_cached:
             finished.append(r)
 
+        prefix_hits = {
+            id_map.get(int(rid), str(rid)): int(n)
+            for rid, n in (result.prefix_hits or {}).items()
+        }
+
         if result.batch is not None:
             done_now = framework.on_batch_complete(
                 list(result.batch.requests),
@@ -140,6 +154,11 @@ async def _run_hybridsim_schedule_async(case: CaseSpec) -> list[ScheduleStepReco
                     id_map.get(r.request_id, str(r.request_id)) for r in done_now
                 )
 
+        allocated_blocks = {
+            id_map.get(int(rid), str(rid)): len(blocks)
+            for rid, blocks in kv.allocated.items()
+        }
+
         records.append(
             ScheduleStepRecord(
                 step=step,
@@ -153,6 +172,9 @@ async def _run_hybridsim_schedule_async(case: CaseSpec) -> list[ScheduleStepReco
                 running_ids=[
                     id_map.get(r.request_id, str(r.request_id)) for r in running
                 ],
+                free_blocks=int(kv.free_blocks),
+                allocated_blocks=allocated_blocks,
+                prefix_hit_tokens=prefix_hits,
             )
         )
 

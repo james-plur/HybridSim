@@ -204,9 +204,13 @@ class ReplicaSchedulerActor(ActorBase):
         req.completed = False
         # Prefill completes before decode tokens: still publish local prefix for reuse.
         if getattr(self._framework, "enable_prefix_caching", False):
-            prefix = list(req.prompt_token_ids[: req.num_prefill_tokens])
-            if prefix:
-                self._kv.cache_prefix(prefix)
+            cache_req = getattr(self._kv, "cache_request_prefix", None)
+            if callable(cache_req):
+                cache_req(req)
+            else:
+                prefix = list(req.prompt_token_ids[: req.num_prefill_tokens])
+                if prefix:
+                    self._kv.cache_prefix(prefix)
         self._kv.free(req)
         transfer_id = str(params.get("transfer_id", ""))
         self._cluster.send(

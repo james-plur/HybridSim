@@ -169,6 +169,7 @@ class VllmFramework(InferenceFramework):
         list[InferenceRequest],
         int,
         bool,
+        dict[int, int],
     ]:
         """Phase 2: admit WAITING requests."""
         still_waiting: list[InferenceRequest] = []
@@ -177,6 +178,7 @@ class VllmFramework(InferenceFramework):
         num_scheduled_tokens: dict[int, int] = {}
         req_to_blocks: dict[int, list[Any]] = {}
         remote_pulls: list[RemoteKvPull] = []
+        prefix_hits: dict[int, int] = {}
         stop_after_remote = False
         queue = list(waiting)
 
@@ -210,6 +212,7 @@ class VllmFramework(InferenceFramework):
                         still_waiting.extend(queue[i + 1 :])
                         break
                     request.num_computed_tokens = local_hit
+                    prefix_hits[request.request_id] = int(local_hit)
 
             if (
                 remote_lookup is not None
@@ -247,7 +250,11 @@ class VllmFramework(InferenceFramework):
                 request.status = RequestStatus.FINISHED
                 request.completed = True
                 if self.enable_prefix_caching:
-                    kv_cache_manager.cache_prefix(list(request.prompt_token_ids))
+                    cache_req = getattr(kv_cache_manager, "cache_request_prefix", None)
+                    if callable(cache_req):
+                        cache_req(request)
+                    else:
+                        kv_cache_manager.cache_prefix(list(request.prompt_token_ids))
                 kv_cache_manager.free(request)
                 finished_cached.append(request)
                 continue
@@ -300,6 +307,7 @@ class VllmFramework(InferenceFramework):
             finished_cached,
             token_budget,
             stop_after_remote,
+            prefix_hits,
         )
 
     @staticmethod
@@ -379,6 +387,7 @@ class VllmFramework(InferenceFramework):
         stop_after_remote = False
         newly: list[InferenceRequest] = []
         finished_cached: list[InferenceRequest] = []
+        prefix_hits: dict[int, int] = {}
 
         if not preempted:
             (
@@ -391,6 +400,7 @@ class VllmFramework(InferenceFramework):
                 finished_cached,
                 budget,
                 stop_after_remote,
+                prefix_hits,
             ) = await self.process_wait_queue(
                 waiting,
                 running,
@@ -415,6 +425,7 @@ class VllmFramework(InferenceFramework):
             preempted=preempted,
             finished_cached=finished_cached,
             stop_after_remote=stop_after_remote,
+            prefix_hits=prefix_hits,
         )
 
     def on_batch_complete(
@@ -448,7 +459,11 @@ class VllmFramework(InferenceFramework):
                 req.status = RequestStatus.FINISHED
                 req.completed = True
                 if self.enable_prefix_caching:
-                    kv_cache_manager.cache_prefix(list(req.prompt_token_ids))
+                    cache_req = getattr(kv_cache_manager, "cache_request_prefix", None)
+                    if callable(cache_req):
+                        cache_req(req)
+                    else:
+                        kv_cache_manager.cache_prefix(list(req.prompt_token_ids))
                 kv_cache_manager.free(req)
                 finished.append(req)
         return finished

@@ -86,8 +86,89 @@ def block_keys_from_tokens(
     return [h.hex() for h in block_hashes_from_tokens(token_ids, block_size)]
 
 
+def block_keys_from_hash_ids(hash_ids: Sequence[int | str]) -> list[str]:
+    """Stable Store keys from precomputed prefix-block identities (trace ``hash_ids``).
+
+    Public Mooncake / kvcache-simulator traces publish remapped integer block ids
+    in prefix order. Using them directly mirrors vLLM APC lookup on already-known
+    block hashes, without re-hashing placeholder tokens.
+    """
+    keys: list[str] = []
+    for hid in hash_ids:
+        if isinstance(hid, bool):
+            raise ValueError("hash_ids must not contain booleans")
+        if isinstance(hid, int):
+            keys.append(str(hid))
+        else:
+            text = str(hid).strip()
+            if not text:
+                raise ValueError("hash_ids entries must be non-empty")
+            keys.append(text)
+    return keys
+
+
 def block_aligned_tokens(num_tokens: int, block_size: int) -> int:
     """Floor to a whole number of blocks (Mooncake-style)."""
     if block_size <= 0 or num_tokens <= 0:
         return 0
     return (num_tokens // block_size) * block_size
+
+
+def prefix_hit_tokens(
+    num_hit_blocks: int,
+    input_length: int,
+    block_size: int,
+) -> int:
+    """Token count for a contiguous cached prefix of ``num_hit_blocks`` blocks.
+
+    Full blocks contribute ``block_size`` tokens; a trailing partial block is
+    capped by ``input_length`` (kvcache-simulator / Mooncake accounting).
+    """
+    if num_hit_blocks <= 0 or block_size <= 0:
+        return 0
+    if input_length <= 0:
+        return int(num_hit_blocks) * int(block_size)
+    return min(int(input_length), int(num_hit_blocks) * int(block_size))
+
+
+def full_block_count(num_tokens: int, block_size: int) -> int:
+    """Number of complete blocks covered by ``num_tokens`` (vLLM APC style)."""
+    if num_tokens <= 0 or block_size <= 0:
+        return 0
+    return int(num_tokens) // int(block_size)
+
+
+def resolve_block_keys(
+    *,
+    token_ids: Sequence[int] | None = None,
+    hash_ids: Sequence[int | str] | None = None,
+    block_size: int,
+    num_tokens: int | None = None,
+    input_length: int | None = None,
+) -> list[str]:
+    """Resolve Store/APC keys: prefer precomputed ``hash_ids``, else vLLM chain hash.
+
+    Truncation (vLLM full-block APC + Mooncake partial last block):
+    - ``num_tokens is None`` → all keys / all full token blocks.
+    - Else only fully covered blocks (``num_tokens // block_size``).
+    - If ``num_tokens >= input_length`` (whole prompt), include the trace's
+      partial last ``hash_id`` when present.
+    """
+    bs = int(block_size)
+    if bs <= 0:
+        raise ValueError("block_size must be positive")
+
+    if hash_ids:
+        keys = block_keys_from_hash_ids(hash_ids)
+        if num_tokens is None:
+            return keys
+        n = max(0, int(num_tokens))
+        il = int(input_length) if input_length is not None else None
+        if il is not None and il > 0 and n >= il:
+            return keys
+        return keys[: full_block_count(n, bs)]
+
+    tokens = list(token_ids or [])
+    if num_tokens is not None:
+        tokens = tokens[: max(0, int(num_tokens))]
+    return block_keys_from_tokens(tokens, bs)
