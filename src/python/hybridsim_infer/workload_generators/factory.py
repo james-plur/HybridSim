@@ -5,7 +5,12 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from hybridsim_infer.workload_generators.base import WorkloadGenerator
-from hybridsim_infer.workload_generators.predict import PredictWorkloadGenerator
+from hybridsim_infer.workload_generators.model_config_resolve import (
+    resolve_analytical_config,
+)
+from hybridsim_infer.workload_generators.predict_workload_generator import (
+    PredictWorkloadGenerator,
+)
 from hybridsim_infer.workload_generators.predictors import (
     BatchDurationPredictor,
     make_predictor,
@@ -25,6 +30,7 @@ def make_workload_generator(
     frontier_replica_id: int = 0,
     frontier_is_moe: bool = False,
     analytical_config: Any = None,
+    model_preset: Optional[str] = None,
     model_config: Any = None,
     parallel_config: Any = None,
     device_config: Any = None,
@@ -36,7 +42,15 @@ def make_workload_generator(
       - ``fixed`` / ``token_proportional`` → ``PredictWorkloadGenerator`` + built-ins
       - ``predict`` → Frontier RF wrapper (requires Frontier + ``frontier_predictor``)
       - ``analytical`` → ``OpWorkloadGenerator`` (Roofline / α-β Operator DAG)
+
+    ``model_preset`` (when set) injects a shared ``ModelConfig`` into
+    ``analytical_config`` for every mode (KV shape + analytical DAG).
     """
+    analytical_config = resolve_analytical_config(
+        analytical_config=analytical_config,
+        model_preset=model_preset,
+    )
+
     mode = (duration_mode or "fixed").lower().strip()
     if mode == "predict":
         return _make_frontier_predict_workload_generator(

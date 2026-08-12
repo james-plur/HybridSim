@@ -130,6 +130,21 @@ class DeviceConfig:
     peak_flops: float = 312e12
     #: HBM bandwidth in bytes/s (e.g. A100 ≈ 2.039e12).
     hbm_bandwidth_bps: float = 2.039e12
+    #: Achieved fraction of ``peak_flops`` (kernel / MFU-style efficiency).
+    #: Effective compute rate = ``peak_flops * compute_util``.
+    compute_util: float = 0.6
+    #: Achieved fraction of ``hbm_bandwidth_bps``.
+    #: Effective bandwidth = ``hbm_bandwidth_bps * hbm_util``.
+    #: Empirically ~0.6 vs Frontier H800 RF on Llama-2-7B memory-bound batches.
+    hbm_util: float = 0.6
+
+    def effective_peak_flops(self) -> float:
+        u = min(1.0, max(1e-6, float(self.compute_util)))
+        return max(1e-30, float(self.peak_flops) * u)
+
+    def effective_hbm_bandwidth_bps(self) -> float:
+        u = min(1.0, max(1e-6, float(self.hbm_util)))
+        return max(1e-30, float(self.hbm_bandwidth_bps) * u)
 
 
 @dataclass

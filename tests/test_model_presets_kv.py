@@ -125,7 +125,7 @@ class TestDsaDag(unittest.TestCase):
             num_prefill_tokens=16,
             num_decode_tokens=0,
             batch_size=1,
-            kv_cache_tokens=0,
+            cached_decode_tokens=0,
         )
         dag = build_operator_dag(
             model=model,
@@ -146,7 +146,7 @@ class TestDsaDag(unittest.TestCase):
             num_prefill_tokens=0,
             num_decode_tokens=1,
             batch_size=1,
-            kv_cache_tokens=128,
+            cached_decode_tokens=128,
         )
         dag = build_operator_dag(
             model=model, parallel=ParallelConfig(), batch=batch

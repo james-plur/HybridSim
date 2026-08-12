@@ -36,10 +36,12 @@ class InferenceConfig(SimulationConfig):
     frontier_predictor: object | None = None
     #: Injected Frontier ``ClusterType`` for ``predict`` mode (default MONOLITHIC).
     frontier_cluster_type: object | None = None
-    #: When ``duration_mode=analytical``: ``AnalyticalConfig`` (or None → defaults).
+    #: ``AnalyticalConfig`` for analytical DAG / device / network (or None → defaults).
     analytical_config: object | None = None
-    #: Optional model preset id (e.g. ``deepseek-v3``); injects ``ModelConfig`` into
-    #: analytical / KV transfer paths when ``analytical_config`` is unset or lacks model.
+    #: Model preset id (e.g. ``llama-3.1-8b`` / ``deepseek-v3``). Shared across all
+    #: ``duration_mode`` values: injects ``ModelConfig`` into analytical DAG and KV
+    #: transfer. For ``predict``, RF timing still comes from ``frontier_predictor``;
+    #: preset and RF should describe the same model family.
     model_preset: str | None = None
     #: Cap on tokens scheduled for one request's prefill chunk in a step.
     tokens_per_step: int = 8
@@ -69,8 +71,14 @@ class InferenceConfig(SimulationConfig):
     kv_bytes_per_token: float = 16.0
     #: Fixed latency α (seconds) for KV transfer α-β model.
     kv_latency_s: float = 0.0
-    #: Remote KV store capacity in blocks.
+    #: Remote KV store DRAM capacity in blocks (``<=0`` → unlimited).
     kv_store_blocks: int = 4096
+    #: SSD tier capacity in blocks (``<=0`` → SSD disabled).
+    kv_store_ssd_blocks: int = 0
+    #: Effective NVMe sequential-read bandwidth for SSD→DRAM staging (GB/s).
+    kv_ssd_bandwidth_gbps: float = 6.0
+    #: Fixed latency α (seconds) for SSD→DRAM staging.
+    kv_ssd_latency_s: float = 0.0
     #: Fire-and-forget Store lookup + ReplyMsg; pending ≈ vLLM ``None``.
     kv_lookup_async: bool = False
     #: Simulated lookup / Prefill control-plane RTT (seconds).

@@ -205,8 +205,12 @@ class VllmFramework(InferenceFramework):
             if self.enable_prefix_caching:
                 local_hit = kv_cache_manager.match(request)
                 if local_hit > request.num_computed_tokens:
-                    gain = local_hit - request.num_computed_tokens
-                    blocks = kv_cache_manager.allocate(request, gain)
+                    attach = getattr(kv_cache_manager, "attach_cached_prefix", None)
+                    if callable(attach):
+                        blocks = attach(request, local_hit)
+                    else:
+                        gain = local_hit - request.num_computed_tokens
+                        blocks = kv_cache_manager.allocate(request, gain)
                     if blocks is None:
                         still_waiting.append(request)
                         still_waiting.extend(queue[i + 1 :])
@@ -238,7 +242,10 @@ class VllmFramework(InferenceFramework):
                     request.pending_remote_tokens = hit_n
                     remote_pulls.append(
                         RemoteKvPull(
-                            request=request, num_tokens=gain, token_ids=token_ids
+                            request=request,
+                            num_tokens=gain,
+                            token_ids=token_ids,
+                            tier=lookup.get("tier"),
                         )
                     )
                     still_waiting.append(request)

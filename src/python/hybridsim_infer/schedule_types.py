@@ -36,6 +36,8 @@ class RemoteKvPull:
     request: InferenceRequest
     num_tokens: int
     token_ids: list[int]
+    #: Store hit location at lookup time (``dram`` / ``ssd``); drives staging delay.
+    tier: Optional[str] = None
 
 
 @dataclass

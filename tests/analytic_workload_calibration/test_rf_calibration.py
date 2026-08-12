@@ -1,7 +1,12 @@
-"""Calibrate Roofline critical-path against RF / mock reference (tests only)."""
+"""Calibrate / align Roofline vs Frontier RF (tests only).
+
+Primary Frontier gate: non-dummy RandomForest from profiling CSVs, with
+``DeviceConfig`` util defaults and ``duration_scale=1.0`` (no fitted scale).
+"""
 
 from __future__ import annotations
 
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -18,7 +23,6 @@ for _p in (_PY, _TESTS, _FRONTIER_EXAMPLE, _FRONTIER_ROOT):
         sys.path.insert(0, s)
 
 from analytic_workload_calibration.calibrator import (
-    alignment_errors,
     calibrate_duration_scale,
     calibrated_config,
     fit_duration_scale,
@@ -49,6 +53,18 @@ try:
 except ImportError:
     _FRONTIER_AVAILABLE = False
 
+_RF_PROFILE = (
+    _FRONTIER_ROOT
+    / "data"
+    / "profiling"
+    / "compute"
+    / "h800"
+    / "llama2_7b_dense_example"
+    / "linear_op.csv"
+)
+_RF_PROFILE_AVAILABLE = _RF_PROFILE.is_file()
+_RESULTS_MD = Path(__file__).resolve().parent / "RF_ALIGNMENT.md"
+
 
 def _prefill(tokens: int, *, rid: int = 1, batch_id: int = 1) -> ScheduleBatch:
     req = InferenceRequest(
@@ -66,6 +82,30 @@ def _prefill(tokens: int, *, rid: int = 1, batch_id: int = 1) -> ScheduleBatch:
     )
 
 
+def _prefill_with_cache(
+    *,
+    prompt: int,
+    cached: int,
+    chunk: int,
+    rid: int = 20,
+    batch_id: int = 20,
+) -> ScheduleBatch:
+    """Mid-prefill / APC partial hit: already computed ``cached`` tokens."""
+    req = InferenceRequest(
+        request_id=rid,
+        arrived_at=0.0,
+        num_prefill_tokens=prompt,
+        num_decode_tokens=8,
+        num_computed_tokens=cached,
+    )
+    return ScheduleBatch(
+        batch_id=batch_id,
+        requests=[req],
+        tokens_per_request={rid: chunk},
+        chunks=[PrefillChunk(request=req, num_tokens=chunk)],
+    )
+
+
 def _decode(*, rid: int = 2, batch_id: int = 2, ctx: int = 128) -> ScheduleBatch:
     req = InferenceRequest(
         request_id=rid,
@@ -79,6 +119,79 @@ def _decode(*, rid: int = 2, batch_id: int = 2, ctx: int = 128) -> ScheduleBatch
         requests=[req],
         tokens_per_request={rid: 1},
         chunks=[DecodeChunk(request=req, num_tokens=1)],
+    )
+
+
+def _multi_prefill(
+    chunks: list[int], *, batch_id: int = 100, base_rid: int = 100
+) -> ScheduleBatch:
+    reqs: list[InferenceRequest] = []
+    tpr: dict[int, int] = {}
+    pcs: list[PrefillChunk] = []
+    for i, n in enumerate(chunks):
+        rid = base_rid + i
+        req = InferenceRequest(
+            request_id=rid,
+            arrived_at=0.0,
+            num_prefill_tokens=max(n * 2, n),
+            num_decode_tokens=8,
+            num_computed_tokens=0,
+        )
+        reqs.append(req)
+        tpr[rid] = int(n)
+        pcs.append(PrefillChunk(request=req, num_tokens=int(n)))
+    return ScheduleBatch(
+        batch_id=batch_id, requests=reqs, tokens_per_request=tpr, chunks=pcs
+    )
+
+
+def _multi_decode(
+    ctxs: list[int], *, batch_id: int = 200, base_rid: int = 200
+) -> ScheduleBatch:
+    reqs: list[InferenceRequest] = []
+    tpr: dict[int, int] = {}
+    dcs: list[DecodeChunk] = []
+    for i, ctx in enumerate(ctxs):
+        rid = base_rid + i
+        req = InferenceRequest(
+            request_id=rid,
+            arrived_at=0.0,
+            num_prefill_tokens=int(ctx),
+            num_decode_tokens=16,
+            num_computed_tokens=int(ctx),
+        )
+        reqs.append(req)
+        tpr[rid] = 1
+        dcs.append(DecodeChunk(request=req, num_tokens=1))
+    return ScheduleBatch(
+        batch_id=batch_id, requests=reqs, tokens_per_request=tpr, chunks=dcs
+    )
+
+
+def _multi_prefill_with_cache(
+    specs: list[tuple[int, int, int]],
+    *,
+    batch_id: int = 300,
+    base_rid: int = 300,
+) -> ScheduleBatch:
+    """specs: list of (prompt, cached, chunk)."""
+    reqs: list[InferenceRequest] = []
+    tpr: dict[int, int] = {}
+    pcs: list[PrefillChunk] = []
+    for i, (prompt, cached, chunk) in enumerate(specs):
+        rid = base_rid + i
+        req = InferenceRequest(
+            request_id=rid,
+            arrived_at=0.0,
+            num_prefill_tokens=int(prompt),
+            num_decode_tokens=8,
+            num_computed_tokens=int(cached),
+        )
+        reqs.append(req)
+        tpr[rid] = int(chunk)
+        pcs.append(PrefillChunk(request=req, num_tokens=int(chunk)))
+    return ScheduleBatch(
+        batch_id=batch_id, requests=reqs, tokens_per_request=tpr, chunks=pcs
     )
 
 
@@ -99,6 +212,25 @@ def _small_cfg(**kwargs) -> AnalyticalConfig:
     )
 
 
+def _llama2_7b_cfg(*, num_layers: int) -> AnalyticalConfig:
+    return AnalyticalConfig(
+        model=ModelConfig(
+            num_layers=num_layers,
+            hidden_size=4096,
+            intermediate_size=11008,
+            num_q_heads=32,
+            num_kv_heads=32,
+            head_dim=128,
+            attn_variant=AttnVariant.MHA,
+            ffn_activation="silu",
+        ),
+        parallel=ParallelConfig(tp_size=1),
+        device=DeviceConfig(),  # defaults: compute_util=hbm_util=0.6
+        network=NetworkConfig(),
+        duration_scale=1.0,
+    )
+
+
 class TestFitDurationScale(unittest.TestCase):
     def test_least_squares_recovers_constant(self) -> None:
         self.assertAlmostEqual(
@@ -111,6 +243,8 @@ class TestFitDurationScale(unittest.TestCase):
 
 
 class TestMockRfNumericalAlignment(unittest.TestCase):
+    """Calibrator math only (mock reference proportional to analytical)."""
+
     def setUp(self) -> None:
         self.cfg = _small_cfg()
         self.gen = OpWorkloadGenerator(analytical=self.cfg)
@@ -162,16 +296,36 @@ class TestMockRfNumericalAlignment(unittest.TestCase):
 
 
 @unittest.skipUnless(_FRONTIER_AVAILABLE, "Frontier not installed / not on PYTHONPATH")
+@unittest.skipUnless(
+    _RF_PROFILE_AVAILABLE,
+    f"Missing Frontier RF profiling CSV: {_RF_PROFILE}",
+)
 class TestFrontierRfNumericalAlignment(unittest.TestCase):
+    """Non-dummy RF vs analytical (util defaults, no duration_scale fit)."""
+
     MAX_REL_ERR = 0.05
 
-    def setUp(self) -> None:
-        ctx = build_monolithic_context(
-            replica_scheduler_kind=ReplicaSchedulerKind.VLLM_V1,
-            dummy_execution_time_ms=10.0,
-            model_name="meta-llama/Llama-2-7b-hf",
-        )
-        self.rf = FrontierBatchDurationPredictor(
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls._prev_cwd = Path.cwd()
+        os.chdir(_FRONTIER_ROOT)
+        try:
+            ctx = build_monolithic_context(
+                replica_scheduler_kind=ReplicaSchedulerKind.VLLM_V1,
+                enable_dummy_mode=False,
+                model_name="llama2_7b_dense_example",
+                device="h800",
+                network_device="h100_pairwise_nvlink",
+            )
+        except Exception as exc:  # pragma: no cover - env dependent
+            os.chdir(cls._prev_cwd)
+            raise unittest.SkipTest(f"Failed to build non-dummy RF: {exc}") from exc
+
+        if bool(getattr(ctx.predictor, "_enable_dummy_mode", True)):
+            os.chdir(cls._prev_cwd)
+            raise unittest.SkipTest("Predictor unexpectedly in dummy mode")
+
+        cls.rf = FrontierBatchDurationPredictor(
             ctx.predictor,
             cluster_type=ClusterType.MONOLITHIC,
             is_moe=False,
@@ -179,65 +333,92 @@ class TestFrontierRfNumericalAlignment(unittest.TestCase):
         layers = int(
             getattr(ctx.predictor, "_num_layers_per_pipeline_stage", 32) or 32
         )
-        self.cfg = AnalyticalConfig(
-            model=ModelConfig(
-                num_layers=layers,
-                hidden_size=4096,
-                intermediate_size=11008,
-                num_q_heads=32,
-                num_kv_heads=32,
-                head_dim=128,
-                attn_variant=AttnVariant.MHA,
-                ffn_activation="silu",
+        cls.cfg = _llama2_7b_cfg(num_layers=layers)
+        cls.gen = OpWorkloadGenerator(analytical=cls.cfg)
+        assert float(cls.gen.analyzer.duration_scale) == 1.0
+        assert float(cls.cfg.device.compute_util) == 0.6
+        assert float(cls.cfg.device.hbm_util) == 0.6
+
+        cls.cases = [
+            (
+                "multi_prefill",
+                _multi_prefill([32, 32, 48], batch_id=101),
             ),
-            parallel=ParallelConfig(tp_size=1),
-            device=DeviceConfig(),
-            network=NetworkConfig(),
-        )
-        self.gen = OpWorkloadGenerator(analytical=self.cfg)
-        self.batches = [
-            _prefill(32, rid=1, batch_id=10),
-            _prefill(64, rid=2, batch_id=11),
-            _decode(rid=3, batch_id=12, ctx=128),
+            (
+                "multi_decode",
+                _multi_decode([128, 256, 512], batch_id=201),
+            ),
+            (
+                "multi_prefill_with_kv_cache",
+                _multi_prefill_with_cache(
+                    [
+                        (128, 64, 32),
+                        (256, 128, 64),
+                        (192, 96, 48),
+                    ],
+                    batch_id=301,
+                ),
+            ),
+            ("single_prefill", _prefill(64, rid=1, batch_id=11)),
+            ("single_decode", _decode(rid=2, batch_id=12, ctx=256)),
+            (
+                "single_prefill_cache",
+                _prefill_with_cache(
+                    prompt=256, cached=128, chunk=64, rid=3, batch_id=13
+                ),
+            ),
         ]
 
-    def test_calibrate_then_match_rf_total_time(self) -> None:
-        scale = calibrate_duration_scale(self.gen, self.batches, self.rf.predict)
-        self.assertGreater(scale, 0.0)
-        errs = alignment_errors(self.gen, self.batches, self.rf.predict)
-        for batch, err in zip(self.batches, errs):
-            got = self.gen.predict_duration_s(batch)
-            ref = float(self.rf.predict(batch))
+    @classmethod
+    def tearDownClass(cls) -> None:
+        try:
+            os.chdir(cls._prev_cwd)
+        except Exception:
+            pass
+
+    def test_analytical_matches_rf_within_tol(self) -> None:
+        rows: list[tuple[str, float, float, float, float]] = []
+        print("\n=== analytical (util=0.6, scale=1) vs non-dummy Frontier RF ===")
+        print(
+            f"{'case':28s} {'analytical_s':>14s} {'rf_s':>14s} "
+            f"{'ratio_a/rf':>12s} {'rel_err':>10s}"
+        )
+        for name, batch in self.cases:
+            analytical = float(self.gen.predict_duration_s(batch))
+            rf_s = float(self.rf.predict(batch))
+            self.assertGreater(analytical, 0.0, msg=name)
+            self.assertGreater(rf_s, 0.0, msg=name)
+            ratio = analytical / rf_s
+            err = relative_error(analytical, rf_s)
+            rows.append((name, analytical, rf_s, ratio, err))
             print(
-                f"rf-align batch={batch.batch_id}: "
-                f"analytical={got:.6e}s rf={ref:.6e}s "
-                f"scale={scale:.6e} rel_err={err:.4f}"
+                f"{name:28s} {analytical:14.6e} {rf_s:14.6e} "
+                f"{ratio:12.4f} {err:10.4f}"
             )
-            self.assertLessEqual(err, self.MAX_REL_ERR)
-        self.assertLessEqual(sum(errs) / len(errs), self.MAX_REL_ERR)
-
-        # Reuse calibrated params on a fresh generator (production path).
-        reused = OpWorkloadGenerator(
-            analytical=calibrated_config(self.cfg, duration_scale=scale)
-        )
-        for batch in self.batches:
             self.assertLessEqual(
-                relative_error(
-                    reused.predict_duration_s(batch), float(self.rf.predict(batch))
-                ),
+                err,
                 self.MAX_REL_ERR,
+                msg=f"{name}: rel_err={err:.4f} > {self.MAX_REL_ERR}",
             )
 
-    def test_uncalibrated_differs_then_calibrated_matches(self) -> None:
-        batch = self.batches[0]
-        raw = self.gen.predict_duration_s(batch)
-        rf_s = float(self.rf.predict(batch))
-        self.assertGreater(relative_error(raw, rf_s), 0.5)
-        calibrate_duration_scale(self.gen, [batch], self.rf.predict)
-        self.assertLessEqual(
-            relative_error(self.gen.predict_duration_s(batch), rf_s),
-            self.MAX_REL_ERR,
-        )
+        lines = [
+            "# Analytical vs non-dummy Frontier RF",
+            "",
+            "Predictor: `llama2_7b_dense_example` @ `h800`, `enable_dummy_mode=False`.",
+            "Analytical: Llama-2-7B shape, `duration_scale=1.0`, "
+            "`compute_util=hbm_util=0.6`.",
+            f"Gate: `MAX_REL_ERR = {self.MAX_REL_ERR}`.",
+            "",
+            "| case | analytical_s | rf_s | analytical/rf | rel_err |",
+            "|------|-------------:|-----:|--------------:|--------:|",
+        ]
+        for name, a, r, ratio, err in rows:
+            lines.append(
+                f"| {name} | {a:.6e} | {r:.6e} | {ratio:.4f} | {err:.4f} |"
+            )
+        lines.append("")
+        _RESULTS_MD.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        print(f"wrote {_RESULTS_MD}")
 
 
 if __name__ == "__main__":

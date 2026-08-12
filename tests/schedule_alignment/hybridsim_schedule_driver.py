@@ -79,6 +79,7 @@ async def _run_hybridsim_schedule_async(case: CaseSpec) -> list[ScheduleStepReco
     kv = VllmKvCacheManager(
         num_gpu_blocks=cfg["num_gpu_blocks"],
         block_size=cfg["block_size"],
+        enable_prefix_caching=cfg["enable_prefix_caching"],
     )
     for prefix in case.seed_prefix_cache:
         kv.cache_prefix(list(prefix))

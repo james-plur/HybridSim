@@ -10,6 +10,12 @@ from hybridsim_infer.workload_generators.analytic_model.configs import (
 from hybridsim_infer.workload_generators.analytic_model.dag_builder import (
     build_operator_dag,
 )
+from hybridsim_infer.workload_generators.analytic_model.dag_profile import (
+    asap_schedule,
+    build_chrome_trace,
+    profile_schedule_batch,
+    write_chrome_trace,
+)
 from hybridsim_infer.workload_generators.analytic_model.kv_cache import (
     bytes_per_token,
     cache_bytes,
@@ -54,6 +60,8 @@ __all__ = [
     "OperatorKind",
     "ParallelConfig",
     "TpCommStyle",
+    "asap_schedule",
+    "build_chrome_trace",
     "bytes_per_token",
     "build_operator_dag",
     "cache_bytes",
@@ -62,6 +70,8 @@ __all__ = [
     "list_presets",
     "load_model_config",
     "load_preset",
+    "profile_schedule_batch",
     "strip_layer_prefix",
     "total_kernel_duration_s",
+    "write_chrome_trace",
 ]

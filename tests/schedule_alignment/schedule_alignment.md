@@ -178,12 +178,15 @@ hybridsim 用 `on_batch_complete` 收拢（driver 与 `ReplicaSchedulerActor.on_
 2. 若本步刚完成 prefill 且仍有 decode 配额：`num_output_tokens += 1`，并为 finished 检测再 `computed += 1`  
 3. `num_tokens = num_prefill + num_output` 供后续 full-ISL；**preempt 不重置 `num_output_tokens`**（与 vLLM 输出仍留在 request 上一致）
 
-### 3.7 Prefix caching / APC
+### 3.7 Prefix caching / APC（BlockPool）
 
 | | vLLM | hybridsim |
 |--|------|-----------|
 | 默认 | APC 需显式开启 | `enable_prefix_caching=False` |
-| 实现 | block hash 表（`get_request_block_hasher` + `get_computed_blocks`） | 同款 block-hash 链：`resolve_block_keys` / `block_keys_from_tokens`（`PYTHONHASHSEED=0`） |
+| 实现 | `BlockPool`：hash→block、`ref_cnt`、free 后可命中、allocate 时 `cache_blocks` | `VllmKvCacheManager`：同款语义；命中走 `attach_cached_prefix`（复用物理页），非整段新 `allocate` |
+| 可见性 | 进行中满块即可被其他请求命中 | `allocate` 成功且 APC 开时挂满块；A 未 finish 时 B 可命中 |
+| 容量 | 有限 GPU blocks | `num_gpu_blocks<=0` → 无限（不淘汰） |
+| Hash | `get_request_block_hasher` | `resolve_block_keys` / `block_keys_from_tokens`（`PYTHONHASHSEED=0`） |
 | `hash_ids` | 不适用（本 harness 用 token） | 有 `hash_ids` 时优先用 trace keys；alignment case 不传 |
 
 校准基线 case（如 `local_prefix`）两侧默认关缓存，保证「同 prompt 也全量 prefill」一致。  
@@ -193,7 +196,13 @@ APC 命中上限与 vLLM 一致：`max_cache_hit_length = prompt_len - 1`，再�
 
 **不**用公开 remapped `hash_ids` trace 直接与 vLLM APC hasher 对比（hasher 不同）；本校准用同一 `prompt_token_ids` + 同款 block hash。
 
-### 3.8 配置旋钮对照
+### 3.8 Store / SSD（与 schedule case 正交时）
+
+- DRAM：`kv_store_blocks`（`<=0` 无限）；满则 LRU 淘汰，或 offload 到 SSD（若开启）。
+- SSD：`kv_store_ssd_blocks`（`<=0` 关闭）；lookup hit 带 `tier`；pull 时延 = staging（`kv_ssd_bandwidth_gbps` / `kv_ssd_latency_s`，有效 NVMe 读）+ 网络 α-β。
+- 写池：仅满块越过 `num_saved` 边界才 put/push；`confirm_cached` 不 push。
+
+### 3.9 配置旋钮对照
 
 | Case / Config 字段 | vLLM | hybridsim |
 |--------------------|------|-----------|
@@ -201,8 +210,8 @@ APC 命中上限与 vLLM 一致：`max_cache_hit_length = prompt_len - 1`，再�
 | `max_num_running_reqs` | `max_num_seqs` | 同左 |
 | `long_prefill_token_threshold` | 同名 | 同名 |
 | `reserve_full_isl` | `scheduler_reserve_full_isl` | `VllmFramework.reserve_full_isl` |
-| `num_gpu_blocks` / `block_size` | `KVCacheConfig` / `CacheConfig` | `KvCacheManager` |
-| `enable_prefix_caching` | `CacheConfig.enable_prefix_caching` | framework 开关 |
+| `num_gpu_blocks` / `block_size` | `KVCacheConfig` / `CacheConfig` | `VllmKvCacheManager`（`<=0` 无限 GPU） |
+| `enable_prefix_caching` | `CacheConfig.enable_prefix_caching` | framework + manager 开关 |
 | `framework` | — | `"vllm"`（工厂名） |
 
 ---

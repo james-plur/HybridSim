@@ -45,6 +45,8 @@ class ReplicaSchedulerActor(ActorBase):
         kv_bandwidth_gbps: float = 50.0,
         kv_bytes_per_token: float = 16.0,
         kv_latency_s: float = 0.0,
+        kv_ssd_bandwidth_gbps: float = 6.0,
+        kv_ssd_latency_s: float = 0.0,
         kv_lookup_async: bool = False,
         kv_lookup_rtt_s: float = 1e-3,
         tokens_per_step: int = 8,
@@ -141,12 +143,18 @@ class ReplicaSchedulerActor(ActorBase):
                 transfer_s_floor=kv_transfer_s,
                 kv_latency_s=kv_latency_s,
                 lookup_rtt_s=kv_lookup_rtt_s,
+                ssd_bandwidth_gbps=kv_ssd_bandwidth_gbps,
+                ssd_latency_s=kv_ssd_latency_s,
                 on_transfer_complete=self._on_kv_transfer_complete,
                 model_config=model_cfg,
                 network_config=net_cfg,
                 profile=self._profile,
                 replica_id=self.replica_id,
             )
+            if hasattr(self._kv, "enable_prefix_caching"):
+                self._kv.enable_prefix_caching = bool(
+                    getattr(self._framework, "enable_prefix_caching", False)
+                )
             self._kv.attach_client(
                 client,
                 kv_lookup_async=bool(kv_lookup_async),

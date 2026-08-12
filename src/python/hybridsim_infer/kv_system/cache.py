@@ -1,12 +1,15 @@
-"""Replica-local KV cache managers (GPU blocks + optional remote client)."""
+"""Replica-local KV cache managers (GPU BlockPool APC + optional remote client)."""
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from hybridsim_infer.kv_system.block_keys import (
+    block_aligned_tokens,
+    full_block_count,
     prefix_hit_tokens,
     resolve_block_keys,
 )
@@ -18,6 +21,12 @@ from hybridsim_infer.request import InferenceRequest, RequestStatus
 class KvBlock:
     block_id: int
     token_count: int = 0
+    ref_cnt: int = 0
+    block_hash: Optional[str] = None
+
+
+def _cdiv(a: int, b: int) -> int:
+    return (int(a) + int(b) - 1) // int(b) if b > 0 else 0
 
 
 class KvCacheManager(ABC):
@@ -75,8 +84,6 @@ class KvCacheManager(ABC):
     def preempt(self, request: Any) -> None:
         ...
 
-    # --- optional remote (default: disabled) ---
-
     @property
     def remote_enabled(self) -> bool:
         return False
@@ -111,6 +118,7 @@ class KvCacheManager(ABC):
             "num_tokens": int(getattr(msg, "num_tokens", 0) or 0),
             "num_blocks": int(getattr(msg, "num_blocks", 0) or 0),
             "location": getattr(msg, "location", None),
+            "tier": getattr(msg, "tier", None),
         }
 
     async def save_computed_prefixes(self, requests: list[InferenceRequest]) -> None:
@@ -121,37 +129,68 @@ class KvCacheManager(ABC):
     ) -> None:
         return None
 
+    def attach_cached_prefix(
+        self, request: Any, num_tokens: int
+    ) -> Optional[list[KvBlock]]:
+        """Attach locally cached APC blocks for ``num_tokens`` (default: unsupported)."""
+        return None
+
 
 @dataclass
 class VllmKvCacheManager(KvCacheManager):
-    """vLLM-like GPU KV blocks + prefix cache; may hold a ``KvClient`` for remote.
+    """vLLM-like GPU BlockPool + APC; may hold a ``KvClient`` for remote Store.
 
-    Local APC (block-hash table, contiguous prefix):
-    - Prefer request ``hash_ids`` (trace / precomputed block keys).
-    - Otherwise use ``resolve_block_keys`` / vLLM-compatible token block hashes
-      (``PYTHONHASHSEED=0`` for alignment with offline vLLM hasher).
+    Local APC (hash → physical block, ref_cnt, mid-flight visibility):
+    - Prefer request ``hash_ids``; else vLLM-compatible token block hashes.
+    - ``num_gpu_blocks <= 0``: unlimited GPU pages (no eviction).
     """
 
     num_gpu_blocks: int = 1024
     block_size: int = 16
     free_blocks: int = 1024
+    enable_prefix_caching: bool = False
     allocated: dict[int, list[KvBlock]] = field(default_factory=dict)
-    _prefix_hash_chains: list[list[str]] = field(default_factory=list)
-    _next_block_id: int = 0
     _client: Optional[KvClient] = field(default=None, repr=False)
     _kv_lookup_async: bool = False
     _pending_kv_pulls: set[int] = field(default_factory=set)
     _null_reserved: int = field(default=0, init=False)
+    _unlimited: bool = field(default=False, init=False)
+    _blocks: list[KvBlock] = field(default_factory=list, init=False, repr=False)
+    _free_queue: OrderedDict[int, KvBlock] = field(
+        default_factory=OrderedDict, init=False, repr=False
+    )
+    _hash_to_block: dict[str, KvBlock] = field(
+        default_factory=dict, init=False, repr=False
+    )
+    _next_block_id: int = field(default=0, init=False)
+    _num_saved_tokens: dict[int, int] = field(default_factory=dict, init=False)
+    #: Legacy list-of-chains for tests that only call cache_prefix without blocks.
+    _prefix_hash_chains: list[list[str]] = field(default_factory=list, init=False)
 
     def __post_init__(self) -> None:
+        self._unlimited = int(self.num_gpu_blocks) <= 0
+        if self._unlimited:
+            self._null_reserved = 0
+            self.free_blocks = 10**18
+            self._blocks = []
+            self._free_queue = OrderedDict()
+            return
         self._null_reserved = 1 if self.num_gpu_blocks > 0 else 0
-        self.free_blocks = max(0, self.num_gpu_blocks - self._null_reserved)
+        usable = max(0, self.num_gpu_blocks - self._null_reserved)
+        self.free_blocks = usable
+        # Reserve block 0 as null (never in free queue).
+        null = KvBlock(block_id=0, ref_cnt=1)
+        self._blocks = [null]
+        self._free_queue = OrderedDict()
+        for i in range(1, self.num_gpu_blocks):
+            blk = KvBlock(block_id=i)
+            self._blocks.append(blk)
+            self._free_queue[i] = blk
+        self._next_block_id = self.num_gpu_blocks
 
     def _request_block_size(self, request: Any) -> int:
         rbs = int(getattr(request, "block_size", 0) or 0)
         return rbs if rbs > 0 else self.block_size
-
-    # --- local ---
 
     def blocks_for_tokens(self, num_tokens: int) -> int:
         if num_tokens <= 0:
@@ -168,7 +207,6 @@ class VllmKvCacheManager(KvCacheManager):
         *,
         num_tokens: int | None = None,
     ) -> list[str]:
-        """Block-hash keys for local APC (vLLM-compatible when no hash_ids)."""
         bs = self._request_block_size(request)
         if bs <= 0:
             return []
@@ -194,13 +232,81 @@ class VllmKvCacheManager(KvCacheManager):
             input_length=input_len if input_len > 0 else None,
         )
 
-    def match(self, request: Any) -> int:
-        """Longest contiguous cached prefix in tokens (APC block-hash table).
+    def _touch_block(self, block: KvBlock) -> None:
+        if block.ref_cnt == 0 and block.block_id in self._free_queue:
+            self._free_queue.pop(block.block_id, None)
+            if not self._unlimited:
+                self.free_blocks = max(0, self.free_blocks - 1)
+        block.ref_cnt += 1
 
-        Mirrors vLLM ``get_computed_blocks``: hits are full blocks only, and
-        ``max_cache_hit_length = num_prompt_tokens - 1`` so the last token is
-        always recomputed for logits (may drop a whole trailing block).
-        """
+    def _return_block_to_free(self, block: KvBlock) -> None:
+        if block.block_id == 0 and not self._unlimited:
+            return
+        block.ref_cnt = max(0, block.ref_cnt - 1)
+        if block.ref_cnt > 0:
+            return
+        if self._unlimited:
+            # Drop unreferenced unlimited blocks from hash map only when unhashed.
+            if block.block_hash is None:
+                return
+            # Keep hashed blocks as eviction candidates in free queue.
+        if block.block_id in self._free_queue:
+            return
+        if block.block_hash is None:
+            # Evict first: prepend unhashed.
+            items = list(self._free_queue.items())
+            self._free_queue.clear()
+            self._free_queue[block.block_id] = block
+            for k, v in items:
+                self._free_queue[k] = v
+        else:
+            self._free_queue[block.block_id] = block
+        if not self._unlimited:
+            self.free_blocks += 1
+
+    def _evict_one_free(self) -> Optional[KvBlock]:
+        if not self._free_queue:
+            return None
+        bid, block = self._free_queue.popitem(last=False)
+        if not self._unlimited:
+            self.free_blocks = max(0, self.free_blocks - 1)
+        if block.block_hash is not None:
+            self._hash_to_block.pop(block.block_hash, None)
+            block.block_hash = None
+        block.ref_cnt = 0
+        return block
+
+    def _alloc_fresh_blocks(self, n: int) -> Optional[list[KvBlock]]:
+        if n <= 0:
+            return []
+        if self._unlimited:
+            out: list[KvBlock] = []
+            for _ in range(n):
+                bid = self._next_block_id
+                self._next_block_id += 1
+                blk = KvBlock(block_id=bid, token_count=self.block_size, ref_cnt=1)
+                out.append(blk)
+            return out
+        if n > self.free_blocks:
+            return None
+        out = []
+        for _ in range(n):
+            blk = self._evict_one_free()
+            if blk is None:
+                # Roll back
+                for b in out:
+                    self._return_block_to_free(b)
+                return None
+            blk.ref_cnt = 1
+            blk.token_count = self.block_size
+            out.append(blk)
+        return out
+
+    def match(self, request: Any) -> int:
+        """Longest contiguous cached prefix in tokens (APC block-hash table)."""
+        if not self.enable_prefix_caching and not self._hash_to_block:
+            # Still allow chain-list fallback when tests call cache_prefix only.
+            pass
         bs = self._request_block_size(request)
         input_len = int(getattr(request, "num_prefill_tokens", 0) or 0)
         tokens = list(getattr(request, "prompt_token_ids", None) or [])
@@ -209,23 +315,66 @@ class VllmKvCacheManager(KvCacheManager):
         keys = self._prefix_keys_for_request(request, num_tokens=input_len or None)
         if not keys or bs <= 0 or input_len <= 0:
             return 0
+
         best_blocks = 0
+        # Primary: hash → block map (BlockPool APC).
+        n = 0
+        for key in keys:
+            if key not in self._hash_to_block:
+                break
+            n += 1
+        best_blocks = n
+
+        # Legacy chain list (cache_prefix without physical blocks).
         for cached in self._prefix_hash_chains:
-            n = 0
+            m = 0
             lim = min(len(cached), len(keys))
-            while n < lim and cached[n] == keys[n]:
-                n += 1
-            if n > best_blocks:
-                best_blocks = n
+            while m < lim and cached[m] == keys[m]:
+                m += 1
+            if m > best_blocks:
+                best_blocks = m
+
         hit = prefix_hit_tokens(best_blocks, input_len, bs)
-        # vLLM: never treat the full prompt as cached (need last token logits).
         max_hit = max(0, input_len - 1)
         hit = min(hit, max_hit)
-        # allocate_slots expects block-aligned computed tokens for APC hits.
         return (hit // bs) * bs
 
+    def attach_cached_prefix(
+        self, request: Any, num_tokens: int
+    ) -> Optional[list[KvBlock]]:
+        """Reuse APC blocks for a block-aligned hit; add to ``allocated``."""
+        bs = self._request_block_size(request)
+        n = block_aligned_tokens(int(num_tokens), bs)
+        if n <= 0:
+            return []
+        keys = self._prefix_keys_for_request(request, num_tokens=n)
+        need = full_block_count(n, bs)
+        if len(keys) < need:
+            return None
+        rid = getattr(request, "request_id", id(request))
+        have = list(self.allocated.get(rid, []))
+        if len(have) >= need:
+            return []
+        attached: list[KvBlock] = []
+        for i in range(len(have), need):
+            key = keys[i]
+            block = self._hash_to_block.get(key)
+            if block is None:
+                # Legacy hash-chain hit without physical pages: allocate fresh.
+                fresh = self._alloc_fresh_blocks(need - len(have) - len(attached))
+                if fresh is None:
+                    for b in attached:
+                        self._return_block_to_free(b)
+                    return None
+                attached.extend(fresh)
+                break
+            self._touch_block(block)
+            attached.append(block)
+        self.allocated.setdefault(rid, []).extend(attached)
+        return attached
+
     def cache_prefix(self, token_ids: list[int]) -> None:
-        """Legacy helper: hash ``token_ids`` with manager ``block_size`` into APC."""
+        """Legacy helper: record hash chain (and bind to blocks if allocated)."""
         if not token_ids:
             return
         keys = resolve_block_keys(
@@ -247,13 +396,37 @@ class VllmKvCacheManager(KvCacheManager):
             or getattr(request, "num_prefill_tokens", 0)
             or 0
         )
-        keys = self._prefix_keys_for_request(request, num_tokens=n if n > 0 else None)
-        if not keys:
+        self.cache_blocks(request, n)
+
+    def cache_blocks(self, request: Any, num_tokens: int) -> None:
+        """Publish full blocks into APC (vLLM ``cache_blocks``)."""
+        bs = self._request_block_size(request)
+        rid = getattr(request, "request_id", id(request))
+        blocks = self.allocated.get(rid, [])
+        n_full = full_block_count(int(num_tokens), bs)
+        keys = self._prefix_keys_for_request(
+            request, num_tokens=n_full * bs if n_full > 0 else int(num_tokens) or None
+        )
+        if keys and keys not in self._prefix_hash_chains:
+            self._prefix_hash_chains.append(keys)
+        if not self.enable_prefix_caching or n_full <= 0 or not blocks:
             return
-        for cached in self._prefix_hash_chains:
-            if cached == keys:
-                return
-        self._prefix_hash_chains.append(keys)
+        for i in range(min(n_full, len(blocks), len(keys))):
+            block = blocks[i]
+            key = keys[i]
+            if block.block_hash == key:
+                continue
+            if block.block_hash is not None and self._hash_to_block.get(
+                block.block_hash
+            ) is block:
+                self._hash_to_block.pop(block.block_hash, None)
+            if key not in self._hash_to_block:
+                block.block_hash = key
+                self._hash_to_block[key] = block
+            elif self._hash_to_block[key] is block:
+                block.block_hash = key
+            else:
+                block.block_hash = None
 
     def blocks_needed_to_hold(self, request: Any, num_tokens: int) -> int:
         rid = getattr(request, "request_id", id(request))
@@ -265,6 +438,8 @@ class VllmKvCacheManager(KvCacheManager):
         self, request: Any, num_tokens: int, *, reserved_blocks: int = 0
     ) -> bool:
         grow = self.blocks_needed_to_hold(request, num_tokens)
+        if self._unlimited:
+            return True
         return grow <= max(0, self.free_blocks - reserved_blocks)
 
     def allocate(self, request: Any, num_tokens: int) -> Optional[list[KvBlock]]:
@@ -275,22 +450,24 @@ class VllmKvCacheManager(KvCacheManager):
         need_tokens = computed + int(num_tokens)
         grow = self.blocks_needed_to_hold(request, need_tokens)
         if grow <= 0:
+            if self.enable_prefix_caching:
+                self.cache_blocks(request, need_tokens)
             return []
-        if grow > self.free_blocks:
+        fresh = self._alloc_fresh_blocks(grow)
+        if fresh is None:
             return None
-        blocks: list[KvBlock] = []
-        for _ in range(grow):
-            bid = self._next_block_id
-            self._next_block_id += 1
-            blocks.append(KvBlock(block_id=bid, token_count=self.block_size))
-        self.free_blocks -= grow
-        self.allocated.setdefault(rid, []).extend(blocks)
-        return blocks
+        self.allocated.setdefault(rid, []).extend(fresh)
+        if self.enable_prefix_caching:
+            self.cache_blocks(request, need_tokens)
+        return fresh
 
     def free(self, request: Any) -> None:
         rid = getattr(request, "request_id", id(request))
         blocks = self.allocated.pop(rid, [])
-        self.free_blocks += len(blocks)
+        # Reverse order: tail first (vLLM eviction priority).
+        for block in reversed(blocks):
+            self._return_block_to_free(block)
+        self._num_saved_tokens.pop(rid, None)
 
     def preempt(self, request: Any) -> None:
         self.free(request)
@@ -329,7 +506,6 @@ class VllmKvCacheManager(KvCacheManager):
             return {"hit": False, "num_tokens": 0}
         params = request.kv_transfer_params or {}
 
-        # Prefill-phase PD request: no remote lookup on this replica.
         if params.get("do_remote_decode") and not params.get("do_remote_prefill"):
             return {"hit": False, "num_tokens": 0}
 
@@ -346,7 +522,6 @@ class VllmKvCacheManager(KvCacheManager):
         bs = self._request_block_size(request)
         input_len = int(request.num_prefill_tokens or len(tokens) or 0)
 
-        # Decode-phase PD: skip Store hash match; control-plane RTT to source P.
         if params.get("do_remote_prefill"):
             if request.pending_lookup:
                 return {"pending": True}
@@ -389,10 +564,12 @@ class VllmKvCacheManager(KvCacheManager):
             return
         for pull in pulls:
             self._pending_kv_pulls.add(pull.request.request_id)
+            tier = getattr(pull, "tier", None)
             self._client.after_alloc_load(
                 pull.request.request_id,
                 pull.num_tokens,
                 local_block_ids=None,
+                tier=tier,
             )
 
     def on_lookup_reply(self, msg: Any) -> dict[str, Any]:
@@ -401,32 +578,60 @@ class VllmKvCacheManager(KvCacheManager):
         return super().on_lookup_reply(msg)
 
     async def save_computed_prefixes(self, requests: list[InferenceRequest]) -> None:
-        # Save when Store is wired (client may exist for PD control-plane alone).
+        """Save newly completed full blocks to Store (vLLM Mooncake gate)."""
         if self._client is None or not self._client.has_store:
             return
         for req in requests:
-            # Prefill-phase PD handoff requests can still publish to Store.
-            n = int(req.num_computed_tokens or 0)
-            if n <= 0:
+            if req.status == RequestStatus.WAIT_FOR_REMOTE_KVS:
                 continue
-            tokens = list(req.prompt_token_ids[:n]) if req.prompt_token_ids else []
-            hashes = list(req.hash_ids or [])
-            if not tokens and not hashes:
-                continue
+            rid = int(req.request_id)
             bs = self._request_block_size(req)
-            input_len = int(req.num_prefill_tokens or 0)
+            if bs <= 0:
+                continue
+            computed = int(req.num_computed_tokens or 0)
+            prefill_end = int(req.num_prefill_tokens or 0)
+            if prefill_end <= 0 and req.prompt_token_ids:
+                prefill_end = len(req.prompt_token_ids)
+            # Do not save decode-only suffix past prefill (vLLM scheduler gate).
+            save_upto = min(computed, prefill_end) if prefill_end > 0 else computed
+            if save_upto <= 0:
+                continue
+            aligned = block_aligned_tokens(save_upto, bs)
+            saved = int(self._num_saved_tokens.get(rid, 0))
+            chunk_boundary = _cdiv(saved + 1, bs) * bs
+            if aligned < chunk_boundary:
+                continue
+            delta = aligned - saved
+            if delta <= 0:
+                continue
+            all_keys = self._prefix_keys_for_request(req, num_tokens=aligned)
+            start_i = saved // bs
+            end_i = aligned // bs
+            keys = all_keys[start_i:end_i]
+            if not keys:
+                continue
+            tokens = list(req.prompt_token_ids[:aligned]) if req.prompt_token_ids else []
+            hashes = list(req.hash_ids or [])
             reply = await self._client.save(
-                req.request_id,
+                rid,
                 tokens,
                 hash_ids=hashes or None,
                 block_size=bs,
-                num_tokens=n,
-                input_length=input_len if input_len > 0 else n,
+                num_tokens=aligned,
+                input_length=prefill_end if prefill_end > 0 else aligned,
+                block_keys=keys,
             )
-            if reply and reply.get("ok") and not req.completed:
-                n_tok = int(reply.get("num_tokens", 0))
-                if n_tok > 0:
-                    self._client.submit_push(req.request_id, n_tok)
+            if not reply or not reply.get("ok"):
+                continue
+            self._num_saved_tokens[rid] = aligned
+            # Only push newly inserted bytes (not confirm_cached).
+            if reply.get("cached"):
+                continue
+            n_tok = int(reply.get("num_tokens", 0) or 0)
+            if n_tok <= 0:
+                n_tok = delta
+            if n_tok > 0 and not req.completed:
+                self._client.submit_push(rid, n_tok)
 
     def apply_pull_complete(
         self, request_id: int, waiting: list[InferenceRequest]
@@ -443,4 +648,6 @@ class VllmKvCacheManager(KvCacheManager):
                 req.num_computed_tokens = max(req.num_computed_tokens, hit)
                 req.pending_remote_tokens = 0
                 req.status = RequestStatus.WAITING
+                if self.enable_prefix_caching:
+                    self.cache_blocks(req, req.num_computed_tokens)
             break

@@ -115,14 +115,48 @@ class TestBatchFeatures(unittest.TestCase):
     def test_decode_phase(self) -> None:
         feats = extract_batch_features(_decode_batch())
         self.assertEqual(feats.phase, BatchPhase.DECODE)
-        self.assertGreater(feats.kv_cache_tokens, 0)
+        self.assertGreater(feats.cached_decode_tokens, 0)
 
 
 class TestRooflineAndAB(unittest.TestCase):
     def test_roofline_compute_bound(self) -> None:
-        device = DeviceConfig(peak_flops=100.0, hbm_bandwidth_bps=1e12)
+        device = DeviceConfig(
+            peak_flops=100.0,
+            hbm_bandwidth_bps=1e12,
+            compute_util=1.0,
+            hbm_util=1.0,
+        )
         self.assertAlmostEqual(
             roofline_time_s(flops=1000.0, bytes_=1.0, device=device), 10.0
+        )
+
+    def test_roofline_util_scales_duration(self) -> None:
+        ideal = DeviceConfig(
+            peak_flops=100.0,
+            hbm_bandwidth_bps=1e12,
+            compute_util=1.0,
+            hbm_util=1.0,
+        )
+        util06 = DeviceConfig(
+            peak_flops=100.0,
+            hbm_bandwidth_bps=1e12,
+            compute_util=0.6,
+            hbm_util=0.6,
+        )
+        t_ideal = roofline_time_s(flops=1000.0, bytes_=1.0, device=ideal)
+        t_util = roofline_time_s(flops=1000.0, bytes_=1.0, device=util06)
+        self.assertAlmostEqual(t_util / t_ideal, 1.0 / 0.6, places=6)
+
+    def test_roofline_hbm_util_memory_bound(self) -> None:
+        device = DeviceConfig(
+            peak_flops=1e20,
+            hbm_bandwidth_bps=100.0,
+            compute_util=1.0,
+            hbm_util=0.5,
+        )
+        # Memory-bound: T = bytes / (bw * util) = 1000 / 50 = 20
+        self.assertAlmostEqual(
+            roofline_time_s(flops=1.0, bytes_=1000.0, device=device), 20.0
         )
 
     def test_ab_zero_when_single_rank(self) -> None:

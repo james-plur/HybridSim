@@ -59,10 +59,13 @@ def build_monolithic_context(
     num_replicas: int = 1,
     attn_data_parallel_size: int = 1,
     dummy_execution_time_ms: float = 100.0,
+    enable_dummy_mode: bool = True,
     batch_size_cap: int = 128,
     max_tokens_in_batch: int = 4096,
     num_blocks: int = 10_000,
     model_name: str = "meta-llama/Llama-2-7b-hf",
+    device: str = "a100",
+    network_device: str | None = None,
     metrics_output_dir: Optional[Path] = None,
 ) -> MonolithicSchedulerContext:
     if replica_scheduler_kind == ReplicaSchedulerKind.VLLM_V1:
@@ -82,16 +85,31 @@ def build_monolithic_context(
     else:
         raise ValueError(f"Unsupported replica scheduler kind: {replica_scheduler_kind}")
 
+    net_dev = network_device
+    if net_dev is None:
+        dev = str(device).lower()
+        if dev.startswith("a100"):
+            net_dev = "a100_pairwise_nvlink"
+        elif dev.startswith("a800"):
+            net_dev = "a800_pairwise_nvlink"
+        elif dev.startswith("h800") or dev.startswith("h100"):
+            # Profiling compute may be under h800; network fixtures commonly use h100.
+            net_dev = "h100_pairwise_nvlink"
+        else:
+            net_dev = "a100_pairwise_nvlink"
+
     cluster_config = ClusterConfig(
         cluster_scheduler_config=RoundRobinClusterSchedulerConfig(),
         replica_scheduler_config=replica_scheduler_config,
         execution_time_predictor_config=RandomForrestExecutionTimePredictorConfig(
-            enable_dummy_mode=True,
+            enable_dummy_mode=bool(enable_dummy_mode),
             dummy_execution_time_ms=dummy_execution_time_ms,
         ),
         num_replicas=num_replicas,
         replica_config=ReplicaConfig(
             model_name=model_name,
+            device=str(device),
+            network_device=str(net_dev),
             num_pipeline_stages=1,
             attn_tensor_parallel_size=1,
             attn_data_parallel_size=attn_data_parallel_size,

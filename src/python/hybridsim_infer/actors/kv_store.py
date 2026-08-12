@@ -32,6 +32,7 @@ class KvStoreActor(ActorBase):
         message_types: dict[str, Any],
         num_blocks: int = 4096,
         block_size: int = 16,
+        num_ssd_blocks: int = 0,
         store: Optional[KvStoreBackend] = None,
         profile_fn: Optional[PoolEventFn] = None,
         profile_step_fn: Optional[Callable[[], int]] = None,
@@ -39,6 +40,7 @@ class KvStoreActor(ActorBase):
         self.store: KvStoreBackend = store or MooncakeKvStore(
             num_blocks=num_blocks,
             block_size=block_size,
+            num_ssd_blocks=num_ssd_blocks,
             profile_fn=profile_fn,
             profile_step_fn=profile_step_fn,
         )
@@ -100,6 +102,7 @@ class KvStoreActor(ActorBase):
                 num_tokens=int(result.get("num_tokens", 0)),
                 num_blocks=int(result.get("num_blocks", 0)),
                 location=None,
+                tier=result.get("tier"),
             )
             return
         self.reply(result)

@@ -119,24 +119,35 @@ def _cost_attn_core(
     tp: int,
     which: str,
 ) -> dict[str, Any]:
+    """Attention flops/bytes.
+
+    Multi-request costing follows FlashAttention-varlen / vLLM practice:
+    sum over requests of ``q_len_i × kv_len_i`` — **no pad-to-max** extra FLOPs.
+    Each request keeps its own cache length.
+    """
     dtype = max(1, int(model.dtype_bytes))
     n_q_l, n_kv_l, d = _dense_head_counts(variant, model, tp)
     if which == "attn_decode":
-        s = max(0, int(batch.num_decode_tokens) or (1 if batch.phase is BatchPhase.DECODE else 0))
-        mean_ctx = max(
-            1.0,
-            batch.kv_cache_tokens / max(1, batch.num_decode_tokens or batch.batch_size),
-        )
-        flops = 4.0 * s * n_q_l * d * mean_ctx
-        nbytes = dtype * (
-            s * n_q_l * d + s * mean_ctx * n_kv_l * d * 2 + s * n_q_l * d
-        )
+        flops = 0.0
+        nbytes = 0.0
+        for tokens_i, ctx_i in batch.iter_decode_attn_pairs():
+            flops += 4.0 * tokens_i * n_q_l * d * ctx_i
+            nbytes += dtype * (
+                tokens_i * n_q_l * d
+                + tokens_i * ctx_i * n_kv_l * d * 2
+                + tokens_i * n_q_l * d
+            )
         return {"flops": flops, "bytes": nbytes}
 
-    # prefill
-    s = max(0, int(batch.num_prefill_tokens) or int(batch.num_tokens))
-    flops = 4.0 * n_q_l * d * s * s
-    nbytes = dtype * (s * n_q_l * d + s * n_kv_l * d * 2 + s * n_q_l * d)
+    # Prefill: Σ_i chunk_i × (cached_i + chunk_i)
+    flops = 0.0
+    nbytes = 0.0
+    for chunk_i, cached_i in batch.iter_prefill_attn_pairs():
+        ctx_i = max(chunk_i, cached_i + chunk_i)
+        flops += 4.0 * n_q_l * d * chunk_i * ctx_i
+        nbytes += dtype * (
+            chunk_i * n_q_l * d + ctx_i * n_kv_l * d * 2 + chunk_i * n_q_l * d
+        )
     return {"flops": flops, "bytes": nbytes}
 
 
@@ -171,17 +182,24 @@ def _mla_cost_for_op(
         flops = 2.0 * s * n_q_l * v_d * h
         return {"flops": flops, "bytes": dtype * (s * n_q_l * v_d + s * h)}
     if op == "attn_mla_prefill":
-        seq = max(1, batch.num_prefill_tokens or s)
-        flops = 4.0 * n_q_l * latent * seq * seq
-        return {"flops": flops, "bytes": dtype * (seq * n_q_l * latent * 2)}
+        flops = 0.0
+        nbytes = 0.0
+        for chunk_i, cached_i in batch.iter_prefill_attn_pairs():
+            ctx_i = max(chunk_i, cached_i + chunk_i)
+            flops += 4.0 * n_q_l * latent * chunk_i * ctx_i
+            nbytes += dtype * (
+                chunk_i * n_q_l * latent + ctx_i * latent + chunk_i * n_q_l * latent
+            )
+        return {"flops": flops, "bytes": nbytes}
     if op == "attn_mla_decode":
-        sd = max(0, batch.num_decode_tokens or (1 if batch.phase is BatchPhase.DECODE else 0))
-        mean_ctx = max(
-            1.0,
-            batch.kv_cache_tokens / max(1, batch.num_decode_tokens or batch.batch_size),
-        )
-        flops = 4.0 * sd * n_q_l * latent * mean_ctx
-        return {"flops": flops, "bytes": dtype * (sd * n_q_l * latent + sd * mean_ctx * latent)}
+        flops = 0.0
+        nbytes = 0.0
+        for tokens_i, ctx_i in batch.iter_decode_attn_pairs():
+            flops += 4.0 * tokens_i * n_q_l * latent * ctx_i
+            nbytes += dtype * (
+                tokens_i * n_q_l * latent + tokens_i * ctx_i * latent
+            )
+        return {"flops": flops, "bytes": nbytes}
     return {"flops": 0.0, "bytes": 0.0}
 
 

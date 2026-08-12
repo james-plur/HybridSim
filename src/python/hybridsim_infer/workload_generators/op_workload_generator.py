@@ -27,48 +27,74 @@ from hybridsim_infer.workload_generators.base import WorkloadGenerator
 
 
 def extract_batch_features(batch: ScheduleBatch) -> BatchFeatures:
-    """Summarize phase and token counts from a ScheduleBatch."""
-    prefill_tokens = 0
-    decode_tokens = 0
-    kv_cache_tokens = 0
+    """Summarize phase and per-request token / KV lengths from a ScheduleBatch.
+
+    Prefill and decode keep **separate** per-request lists (varlen / no pad):
+    - ``prefill_chunk_lens[i]``, ``prefill_cached_lens[i]``
+    - ``decode_token_lens[i]``, ``decode_kv_lens[i]``
+
+    Scalar ``cached_prefix_tokens`` / ``cached_decode_tokens`` are sums of the
+    prefill-only / decode-only lists respectively (not mixed together).
+    """
+    prefill_chunk_lens: list[int] = []
+    prefill_cached_lens: list[int] = []
+    decode_token_lens: list[int] = []
+    decode_kv_lens: list[int] = []
     req_ids: set[int] = set()
+
+    def _add_prefill(req: Any, n: int) -> None:
+        chunk = max(0, int(n))
+        if chunk <= 0:
+            return
+        hit = int(getattr(req, "num_computed_tokens", 0) or 0) if req is not None else 0
+        prefill_chunk_lens.append(chunk)
+        prefill_cached_lens.append(max(0, hit))
+        if req is not None:
+            req_ids.add(int(req.request_id))
+
+    def _add_decode(req: Any, n: int) -> None:
+        tokens = max(1, int(n))
+        if req is None:
+            decode_token_lens.append(tokens)
+            decode_kv_lens.append(1)
+            return
+        computed = int(getattr(req, "num_computed_tokens", 0) or 0)
+        prompt = int(getattr(req, "num_prefill_tokens", 0) or 0)
+        decode_token_lens.append(tokens)
+        decode_kv_lens.append(max(1, max(computed, prompt)))
+        req_ids.add(int(req.request_id))
 
     chunks = list(batch.chunks or [])
     if chunks:
         for ch in chunks:
             if isinstance(ch, PrefillChunk):
-                prefill_tokens += int(ch.num_tokens)
-                req_ids.add(int(ch.request.request_id))
-                kv_cache_tokens += int(getattr(ch.request, "num_computed_tokens", 0) or 0)
+                _add_prefill(ch.request, ch.num_tokens)
             elif isinstance(ch, DecodeChunk):
-                decode_tokens += int(getattr(ch, "num_tokens", 1) or 1)
-                req_ids.add(int(ch.request.request_id))
-                computed = int(getattr(ch.request, "num_computed_tokens", 0) or 0)
-                prompt = int(getattr(ch.request, "num_prefill_tokens", 0) or 0)
-                kv_cache_tokens += max(computed, prompt)
+                _add_decode(ch.request, getattr(ch, "num_tokens", 1) or 1)
             else:
                 n = int(getattr(ch, "num_tokens", 0) or 0)
                 req = getattr(ch, "request", None)
-                if req is not None:
-                    req_ids.add(int(req.request_id))
                 if req is not None and not bool(
                     getattr(req, "num_computed_tokens", 0)
                     >= getattr(req, "num_prefill_tokens", 0)
                 ):
-                    prefill_tokens += n
+                    _add_prefill(req, n)
                 else:
-                    decode_tokens += max(1, n)
+                    _add_decode(req, n or 1)
     else:
         for req in batch.requests or []:
-            req_ids.add(int(req.request_id))
             n = int((batch.tokens_per_request or {}).get(req.request_id, 0))
             computed = int(getattr(req, "num_computed_tokens", 0) or 0)
             prompt = int(getattr(req, "num_prefill_tokens", 0) or 0)
             if computed < prompt:
-                prefill_tokens += n or max(0, prompt - computed)
+                _add_prefill(req, n or max(0, prompt - computed))
             else:
-                decode_tokens += n or 1
-                kv_cache_tokens += max(computed, prompt)
+                _add_decode(req, n or 1)
+
+    prefill_tokens = sum(prefill_chunk_lens)
+    decode_tokens = sum(decode_token_lens)
+    cached_prefix_tokens = sum(prefill_cached_lens)
+    cached_decode_tokens = sum(decode_kv_lens)
 
     if prefill_tokens > 0 and decode_tokens > 0:
         phase = BatchPhase.MIXED
@@ -77,14 +103,18 @@ def extract_batch_features(batch: ScheduleBatch) -> BatchFeatures:
     else:
         phase = BatchPhase.PREFILL
 
-    num_tokens = prefill_tokens + decode_tokens
     return BatchFeatures(
         phase=phase,
-        num_tokens=max(0, num_tokens),
+        num_tokens=max(0, prefill_tokens + decode_tokens),
         num_prefill_tokens=max(0, prefill_tokens),
         num_decode_tokens=max(0, decode_tokens),
         batch_size=max(1, len(req_ids) or len(batch.requests or [])),
-        kv_cache_tokens=max(0, kv_cache_tokens),
+        cached_decode_tokens=max(0, cached_decode_tokens),
+        cached_prefix_tokens=max(0, cached_prefix_tokens),
+        prefill_chunk_lens=prefill_chunk_lens,
+        prefill_cached_lens=prefill_cached_lens,
+        decode_token_lens=decode_token_lens,
+        decode_kv_lens=decode_kv_lens,
     )
 
 

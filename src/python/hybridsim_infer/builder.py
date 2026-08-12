@@ -67,26 +67,15 @@ class InferenceSimulation:
 
 
 def _resolve_analytical_config(config: InferenceConfig) -> Any:
-    """Inject ``model_preset`` into AnalyticalConfig when requested."""
-    analytical = getattr(config, "analytical_config", None)
-    preset = getattr(config, "model_preset", None)
-    if not preset:
-        return analytical
-    from hybridsim_infer.workload_generators.analytic_model.configs import (
-        AnalyticalConfig,
-    )
-    from hybridsim_infer.workload_generators.analytic_model.model_presets import (
-        load_preset,
+    """Inject ``model_preset`` into AnalyticalConfig (shared with all duration modes)."""
+    from hybridsim_infer.workload_generators.model_config_resolve import (
+        resolve_analytical_config,
     )
 
-    model = load_preset(str(preset))
-    if analytical is None:
-        return AnalyticalConfig(model=model)
-    # Replace model on existing AnalyticalConfig when possible.
-    if hasattr(analytical, "model"):
-        analytical.model = model
-        return analytical
-    return AnalyticalConfig(model=model)
+    return resolve_analytical_config(
+        analytical_config=getattr(config, "analytical_config", None),
+        model_preset=getattr(config, "model_preset", None),
+    )
 
 
 def build_inference_simulation(
@@ -133,6 +122,7 @@ def build_inference_simulation(
             KvStoreActor,
             num_blocks=config.kv_store_blocks,
             block_size=config.block_size,
+            num_ssd_blocks=getattr(config, "kv_store_ssd_blocks", 0),
         )
 
     profile_arg = profile if getattr(profile, "enabled", False) else None
@@ -142,6 +132,7 @@ def build_inference_simulation(
         kv = VllmKvCacheManager(
             num_gpu_blocks=config.num_gpu_blocks,
             block_size=config.block_size,
+            enable_prefix_caching=config.enable_prefix_caching,
         )
         kv_engine = (
             sim.create_engine_actor() if config.enable_kv_client else None
@@ -169,6 +160,8 @@ def build_inference_simulation(
             kv_bandwidth_gbps=config.kv_bandwidth_gbps,
             kv_bytes_per_token=config.kv_bytes_per_token,
             kv_latency_s=getattr(config, "kv_latency_s", 0.0),
+            kv_ssd_bandwidth_gbps=getattr(config, "kv_ssd_bandwidth_gbps", 6.0),
+            kv_ssd_latency_s=getattr(config, "kv_ssd_latency_s", 0.0),
             kv_lookup_async=config.kv_lookup_async,
             kv_lookup_rtt_s=config.kv_lookup_rtt_s,
             max_num_scheduled_tokens=config.max_num_scheduled_tokens,

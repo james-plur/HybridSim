@@ -52,8 +52,10 @@ def _sched_cfg(case: CaseSpec) -> dict[str, Any]:
         "reserve_full_isl": bool(s.get("reserve_full_isl", True)),
         "enable_prefix_caching": bool(s.get("enable_prefix_caching", False)),
         "enable_remote_store": bool(s.get("enable_remote_store", True)),
-        # Offline Mooncake pool capacity (blocks). Small values force LRU evict.
+        # Offline Mooncake pool capacity (blocks). ``<=0`` → unlimited DRAM.
         "store_num_blocks": int(s.get("store_num_blocks", 4096)),
+        # SSD tier (``<=0`` → disabled).
+        "store_ssd_blocks": int(s.get("store_ssd_blocks", 0)),
     }
 
 
@@ -89,6 +91,7 @@ async def _run_async(
     kv = VllmKvCacheManager(
         num_gpu_blocks=cfg["num_gpu_blocks"],
         block_size=cfg["block_size"],
+        enable_prefix_caching=cfg["enable_prefix_caching"],
     )
     for prefix in case.seed_prefix_cache:
         kv.cache_prefix(list(prefix))
@@ -98,18 +101,22 @@ async def _run_async(
     pool = MooncakeKvStore(
         num_blocks=cfg["store_num_blocks"],
         block_size=cfg["block_size"],
+        num_ssd_blocks=cfg["store_ssd_blocks"],
         profile_fn=_pool_profile,
         profile_step_fn=lambda: step_box["step"],
     )
+    # Per-request Mooncake save offset (full blocks already put).
+    num_saved_tokens: dict[int, int] = {}
 
     def remote_lookup(request: InferenceRequest) -> dict[str, Any]:
         if not cfg["enable_remote_store"]:
-            return {"hit": False, "num_tokens": 0}
+            return {"hit": False, "num_tokens": 0, "tier": None}
         keys = block_keys_from_tokens(request.prompt_token_ids, cfg["block_size"])
         result = pool.lookup_keys(keys, req_id=str(request.request_id))
         return {
             "hit": bool(result.get("hit")),
             "num_tokens": int(result.get("num_tokens", 0)),
+            "tier": result.get("tier"),
         }
 
     pending = sorted(case.requests, key=lambda r: (r.arrive_step, r.request_id))
@@ -169,11 +176,24 @@ async def _run_async(
                 result.batch.tokens_per_request,
                 kv,
             )
+            bs = cfg["block_size"]
             for req in result.batch.requests:
-                prefix = list(req.prompt_token_ids[: req.num_computed_tokens])
-                keys = block_keys_from_tokens(prefix, cfg["block_size"])
-                if keys:
-                    pool.insert_keys(keys, req_id=str(req.request_id))
+                # Mooncake write-pool gate: only newly completed full blocks.
+                computed = int(req.num_computed_tokens or 0)
+                prefill_end = int(req.num_prefill_tokens or 0)
+                save_upto = min(computed, prefill_end) if prefill_end > 0 else computed
+                aligned = (save_upto // bs) * bs if bs > 0 else 0
+                saved = int(num_saved_tokens.get(req.request_id, 0))
+                # cdiv(saved + 1, bs) * bs
+                chunk_boundary = ((saved + bs) // bs) * bs if bs > 0 else 0
+                if aligned >= chunk_boundary and aligned > saved:
+                    all_keys = block_keys_from_tokens(
+                        req.prompt_token_ids[:aligned], bs
+                    )
+                    keys = all_keys[saved // bs : aligned // bs]
+                    if keys:
+                        pool.insert_keys(keys, req_id=str(req.request_id))
+                    num_saved_tokens[req.request_id] = aligned
             if done_now:
                 done_ids = {r.request_id for r in done_now}
                 running = [r for r in running if r.request_id not in done_ids]
