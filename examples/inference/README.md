@@ -20,6 +20,8 @@ Native Actor-based inference on hybridsim. Corresponds to
 
 **RequestGenerator vs WorkloadGenerator**：前者生成带 `arrived_at` 的 `InferenceRequest` 序列并注入 ClusterScheduler；后者把已调度的 `ScheduleBatch` 变成 Engine TimeoutKernel。ServeGen 虽自称 workload generator，在本项目中只作为请求到达/长度采样后端。
 
+请求生成专项文档（数据来源、KV 轨迹生成、数据结构）：[`docs/request_generation.md`](../../docs/request_generation.md)。
+
 ## Request profile（Chrome Trace）
 
 `InferenceConfig(enable_request_profile=True)` 时，仿真在**子进程**收集事件并写出 JSON（默认 `<repo>/profile/request_profile.json`，目录已 gitignore）。

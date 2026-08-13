@@ -10,7 +10,14 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1] / "data" / "kvcache_traces"
+ROOT = (
+    Path(__file__).resolve().parents[1]
+    / "src"
+    / "python"
+    / "hybridsim_infer"
+    / "request_generators"
+    / "kvcache_traces"
+)
 RAW = ROOT / "raw"
 NORM = ROOT / "normalized"
 META = ROOT / "meta"

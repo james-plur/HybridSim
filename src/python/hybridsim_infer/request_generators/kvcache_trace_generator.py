@@ -25,6 +25,9 @@ from hybridsim_infer.request_generators.base import RequestGenerator
 
 PathLike = Union[str, Path]
 
+#: Package-local KV trace tree (raw / normalized / samples / …).
+KVCACHE_TRACES_DIR = Path(__file__).resolve().parent / "kvcache_traces"
+
 
 def _open_text(path: PathLike) -> TextIO:
     path = Path(path)

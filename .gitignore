@@ -11,9 +11,9 @@ dist/
 src/python/hybridsim_py*.so
 src/python/hybridsim_py*.pyd
 tests/mooncake_alignment/_out/
-# Large downloaded KV cache traces (see data/kvcache_traces/README.md)
-data/kvcache_traces/raw/
-data/kvcache_traces/normalized/
+# Large downloaded KV cache traces (see docs/request_generation.md)
+src/python/hybridsim_infer/request_generators/kvcache_traces/raw/
+src/python/hybridsim_infer/request_generators/kvcache_traces/normalized/
 
 # Schedule-alignment case fixtures (override global *.json ignore)
 !tests/schedule_alignment/cases/*.json
