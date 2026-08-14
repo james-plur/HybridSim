@@ -103,6 +103,9 @@ class KvStoreActor(ActorBase):
                 num_blocks=int(result.get("num_blocks", 0)),
                 location=None,
                 tier=result.get("tier"),
+                ssd_tokens=int(result.get("ssd_tokens", 0) or 0),
+                block_tiers=list(result.get("block_tiers") or []),
+                hit_keys=list(result.get("hit_keys") or []),
             )
             return
         self.reply(result)
@@ -120,4 +123,24 @@ class KvStoreActor(ActorBase):
                 self.store.confirm_cached(keys, req_id=str(msg.request_id))
             )
             return
-        self.reply(self.store.insert_keys(keys, req_id=str(msg.request_id)))
+        # Metadata is reserved immediately, but lookup must not expose the data
+        # until the corresponding async push completes.
+        self.reply(
+            self.store.insert_keys(keys, req_id=str(msg.request_id), ready=False)
+        )
+
+    def mark_ready(self, keys: list[str], *, req_id: str = "") -> int:
+        mark = getattr(self.store, "mark_ready", None)
+        if not callable(mark):
+            return 0
+        return int(mark(list(keys), req_id=req_id))
+
+    def begin_promotions(self, keys: list[str], *, req_id: str = "") -> list[str]:
+        promote = getattr(self.store, "_promote_to_dram", None)
+        if not callable(promote):
+            return []
+        return [
+            key
+            for key in keys
+            if promote(key, req_id=req_id, ready=False)
+        ]

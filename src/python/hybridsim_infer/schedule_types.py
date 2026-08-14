@@ -38,6 +38,10 @@ class RemoteKvPull:
     token_ids: list[int]
     #: Store hit location at lookup time (``dram`` / ``ssd``); drives staging delay.
     tier: Optional[str] = None
+    #: Tokens within the Store hit prefix that were on SSD at lookup time.
+    ssd_tokens: int = 0
+    #: SSD keys promoted into DRAM by this lookup; become visible after pull.
+    promoted_keys: list[str] = field(default_factory=list)
 
 
 @dataclass

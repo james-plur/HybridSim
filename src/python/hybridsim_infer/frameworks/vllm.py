@@ -232,6 +232,28 @@ class VllmFramework(InferenceFramework):
                 hit_n = int(lookup.get("num_tokens", 0)) if lookup.get("hit") else 0
                 if hit_n > request.num_computed_tokens:
                     gain = hit_n - request.num_computed_tokens
+                    block_tiers = list(lookup.get("block_tiers") or [])
+                    if block_tiers:
+                        bs = max(1, int(getattr(request, "block_size", 0) or 0))
+                        if bs <= 1:
+                            bs = max(1, int(getattr(kv_cache_manager, "block_size", 16)))
+                        first_gain_block = request.num_computed_tokens // bs
+                        gained_tiers = block_tiers[first_gain_block:]
+                        ssd_tokens = min(
+                            gain, sum(t == "ssd" for t in gained_tiers) * bs
+                        )
+                        hit_keys = list(lookup.get("hit_keys") or [])
+                        gained_keys = hit_keys[first_gain_block:]
+                        promoted_keys = [
+                            key
+                            for key, tier in zip(gained_keys, gained_tiers)
+                            if tier == "ssd"
+                        ]
+                    else:
+                        ssd_tokens = min(
+                            gain, int(lookup.get("ssd_tokens", 0) or 0)
+                        )
+                        promoted_keys = []
                     blocks = kv_cache_manager.allocate(request, gain)
                     if blocks is None:
                         still_waiting.append(request)
@@ -246,6 +268,8 @@ class VllmFramework(InferenceFramework):
                             num_tokens=gain,
                             token_ids=token_ids,
                             tier=lookup.get("tier"),
+                            ssd_tokens=ssd_tokens,
+                            promoted_keys=promoted_keys,
                         )
                     )
                     still_waiting.append(request)

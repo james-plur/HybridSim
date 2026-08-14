@@ -76,6 +76,9 @@ class KVLookupReplyMsg:
     location: Any = None
     #: ``dram`` / ``ssd`` at hit time (before promote); used for pull staging.
     tier: Any = None
+    ssd_tokens: int = 0
+    block_tiers: list[str] = field(default_factory=list)
+    hit_keys: list[str] = field(default_factory=list)
 
 
 @dataclass
