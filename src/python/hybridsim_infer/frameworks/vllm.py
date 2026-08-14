@@ -240,12 +240,14 @@ class VllmFramework(InferenceFramework):
                     token_ids = list(request.prompt_token_ids[:hit_n])
                     request.status = RequestStatus.WAIT_FOR_REMOTE_KVS
                     request.pending_remote_tokens = hit_n
+                    block_ids = [int(b.block_id) for b in (blocks or [])]
                     remote_pulls.append(
                         RemoteKvPull(
                             request=request,
                             num_tokens=gain,
                             token_ids=token_ids,
                             tier=lookup.get("tier"),
+                            block_ids=block_ids,
                         )
                     )
                     still_waiting.append(request)

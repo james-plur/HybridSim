@@ -38,6 +38,8 @@ class RemoteKvPull:
     token_ids: list[int]
     #: Store hit location at lookup time (``dram`` / ``ssd``); drives staging delay.
     tier: Optional[str] = None
+    #: Newly allocated GPU ``block_id``s for this pull (scatter dests).
+    block_ids: list[int] = field(default_factory=list)
 
 
 @dataclass

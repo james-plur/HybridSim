@@ -14,6 +14,7 @@ from hybridsim_infer.cluster import MonolithClusterManager, PdClusterManager
 from hybridsim_infer.config import InferenceConfig
 from hybridsim_infer.frameworks import FrameworkFactory
 from hybridsim_infer.kv_system import VllmKvCacheManager
+from hybridsim_infer.kv_system.block_keys import resolve_store_block_size
 from hybridsim_infer.messages import INFER_MESSAGE_TYPES
 from hybridsim_infer.request import InferenceRequest
 from hybridsim_infer.request_generators.base import RequestGenerator
@@ -117,11 +118,15 @@ def build_inference_simulation(
     )
 
     kv_store: Optional[KvStoreActor] = None
+    store_bs = resolve_store_block_size(
+        config.block_size, getattr(config, "store_block_size", None)
+    )
     if config.enable_kv_client:
         kv_store = sim.spawn_actor(
             KvStoreActor,
             num_blocks=config.kv_store_blocks,
-            block_size=config.block_size,
+            block_size=store_bs,
+            gpu_block_size=config.block_size,
             num_ssd_blocks=getattr(config, "kv_store_ssd_blocks", 0),
         )
 
@@ -132,6 +137,7 @@ def build_inference_simulation(
         kv = VllmKvCacheManager(
             num_gpu_blocks=config.num_gpu_blocks,
             block_size=config.block_size,
+            store_block_size=store_bs,
             enable_prefix_caching=config.enable_prefix_caching,
         )
         kv_engine = (

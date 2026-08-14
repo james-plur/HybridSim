@@ -138,6 +138,66 @@ def full_block_count(num_tokens: int, block_size: int) -> int:
     return int(num_tokens) // int(block_size)
 
 
+def resolve_store_block_size(
+    gpu_block_size: int, store_block_size: int | None
+) -> int:
+    """Return Store page tokens; default equals GPU ``block_size``."""
+    gpu = int(gpu_block_size)
+    if gpu <= 0:
+        raise ValueError("gpu_block_size must be positive")
+    if store_block_size is None:
+        return gpu
+    store = int(store_block_size)
+    if store < gpu or store % gpu != 0:
+        raise ValueError(
+            f"store_block_size ({store}) must be a positive multiple of "
+            f"gpu_block_size ({gpu})"
+        )
+    return store
+
+
+def store_block_factor(gpu_block_size: int, store_block_size: int) -> int:
+    """N = store page / GPU page. Both sizes in tokens."""
+    gpu = int(gpu_block_size)
+    store = int(store_block_size)
+    if gpu <= 0:
+        raise ValueError("gpu_block_size must be positive")
+    if store < gpu or store % gpu != 0:
+        raise ValueError(
+            f"store_block_size ({store}) must be a positive multiple of "
+            f"gpu_block_size ({gpu})"
+        )
+    return store // gpu
+
+
+def coarsen_keys_for_store(gpu_keys: Sequence[str], n: int) -> list[str]:
+    """Keep the last GPU-block key of each aligned window of ``n`` pages.
+
+    Windows start at index 0. Incomplete trailing windows are dropped.
+    ``n==1`` returns ``gpu_keys`` unchanged.
+    """
+    factor = int(n)
+    if factor <= 0:
+        raise ValueError("store block factor must be positive")
+    keys = list(gpu_keys)
+    if factor == 1:
+        return keys
+    return [keys[i] for i in range(factor - 1, len(keys), factor)]
+
+
+def complete_store_windows(num_gpu_blocks: int, n: int) -> int:
+    """How many aligned Store objects ``num_gpu_blocks`` GPU pages fill."""
+    factor = int(n)
+    if factor <= 0:
+        return 0
+    return max(0, int(num_gpu_blocks)) // factor
+
+
+def store_tokens_per_key(gpu_block_size: int, n: int) -> int:
+    """Tokens covered by one Store object."""
+    return int(gpu_block_size) * int(n)
+
+
 def resolve_block_keys(
     *,
     token_ids: Sequence[int] | None = None,

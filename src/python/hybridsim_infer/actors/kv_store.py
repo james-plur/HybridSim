@@ -12,6 +12,8 @@ from hybridsim import ActorBase, on
 from hybridsim_infer.kv_system.block_keys import (
     block_aligned_tokens,
     block_keys_from_tokens,
+    coarsen_keys_for_store,
+    store_block_factor,
 )
 from hybridsim_infer.kv_system.store_backend import (
     KvStoreBackend,
@@ -32,6 +34,7 @@ class KvStoreActor(ActorBase):
         message_types: dict[str, Any],
         num_blocks: int = 4096,
         block_size: int = 16,
+        gpu_block_size: int | None = None,
         num_ssd_blocks: int = 0,
         store: Optional[KvStoreBackend] = None,
         profile_fn: Optional[PoolEventFn] = None,
@@ -40,6 +43,7 @@ class KvStoreActor(ActorBase):
         self.store: KvStoreBackend = store or MooncakeKvStore(
             num_blocks=num_blocks,
             block_size=block_size,
+            gpu_block_size=gpu_block_size,
             num_ssd_blocks=num_ssd_blocks,
             profile_fn=profile_fn,
             profile_step_fn=profile_step_fn,
@@ -48,6 +52,10 @@ class KvStoreActor(ActorBase):
             self.store.set_profile(profile_fn, profile_step_fn)
         self.num_blocks = int(getattr(self.store, "num_blocks", num_blocks))
         self.block_size = int(self.store.block_size)
+        self.gpu_block_size = int(
+            getattr(self.store, "gpu_block_size", gpu_block_size or block_size)
+        )
+        self.store_factor = int(getattr(self.store, "store_factor", 1) or 1)
         super().__init__(sim=sim, hs_actor=hs_actor, message_types=message_types)
 
     @property
@@ -73,17 +81,30 @@ class KvStoreActor(ActorBase):
     def _insert_keys(self, keys: list[str], *, req_id: str = "") -> dict[str, Any]:
         return self.store.insert_keys(keys, req_id=req_id)
 
+    def _fallback_keys(self, token_ids: list[int]) -> list[str]:
+        gpu_keys = block_keys_from_tokens(list(token_ids), self.gpu_block_size)
+        n = int(getattr(self, "store_factor", 1) or 1)
+        if n <= 1:
+            try:
+                n = store_block_factor(self.gpu_block_size, self.block_size)
+            except ValueError:
+                n = 1
+        return coarsen_keys_for_store(gpu_keys, n)
+
     @on(KVLookupMsg)
     def on_lookup(self, _actor, msg: KVLookupMsg) -> None:
-        keys = list(msg.block_keys) if msg.block_keys else block_keys_from_tokens(
-            list(msg.token_ids), self.block_size
+        keys = list(msg.block_keys) if msg.block_keys else self._fallback_keys(
+            list(msg.token_ids)
         )
         tpb = int(getattr(msg, "tokens_per_block", 0) or 0)
         input_length = int(getattr(msg, "input_length", 0) or 0)
         if msg.token_ids and not msg.block_keys:
-            aligned = block_aligned_tokens(len(msg.token_ids), self.block_size)
-            max_blocks = aligned // self.block_size
-            keys = keys[:max_blocks]
+            aligned = block_aligned_tokens(len(msg.token_ids), self.gpu_block_size)
+            max_gpu = aligned // self.gpu_block_size if self.gpu_block_size else 0
+            gpu_keys = block_keys_from_tokens(list(msg.token_ids), self.gpu_block_size)[
+                :max_gpu
+            ]
+            keys = coarsen_keys_for_store(gpu_keys, max(1, self.store_factor))
             tpb = self.block_size
             input_length = len(msg.token_ids)
         elif tpb <= 0:
@@ -109,8 +130,8 @@ class KvStoreActor(ActorBase):
 
     @on(KVUpdateMsg)
     def on_update(self, _actor, msg: KVUpdateMsg) -> None:
-        keys = list(msg.block_keys) if msg.block_keys else block_keys_from_tokens(
-            list(msg.token_ids), self.block_size
+        keys = list(msg.block_keys) if msg.block_keys else self._fallback_keys(
+            list(msg.token_ids)
         )
         if not keys:
             self.reply({"ok": False, "reason": "empty"})
