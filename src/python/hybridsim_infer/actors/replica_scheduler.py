@@ -138,6 +138,7 @@ class ReplicaSchedulerActor(ActorBase):
                 kv_store,
                 kv_engine,
                 block_size=self._kv.block_size,
+                store_block_size=getattr(self._kv, "store_block_size", None),
                 bandwidth_gbps=kv_bandwidth_gbps,
                 bytes_per_token=kv_bytes_per_token,
                 transfer_s_floor=kv_transfer_s,

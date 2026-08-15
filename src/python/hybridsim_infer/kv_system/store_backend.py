@@ -12,7 +12,9 @@ from typing import Any, Callable, Literal, Optional
 
 from hybridsim_infer.kv_system.block_keys import (
     block_keys_from_tokens,
+    coarsen_keys_for_store,
     prefix_hit_tokens,
+    store_block_factor,
 )
 
 PoolEventFn = Callable[..., None]
@@ -90,12 +92,19 @@ class MooncakeKvStore(KvStoreBackend):
         *,
         num_blocks: int = 4096,
         block_size: int = 16,
+        gpu_block_size: int | None = None,
         num_ssd_blocks: int = 0,
         profile_fn: Optional[PoolEventFn] = None,
         profile_step_fn: Optional[Callable[[], int]] = None,
     ) -> None:
         self.num_blocks = int(num_blocks)
+        #: Tokens per Store object (may be N × GPU page).
         self.block_size = int(block_size)
+        #: GPU hash / page unit. Keys are coarsened from this chain.
+        self.gpu_block_size = (
+            int(gpu_block_size) if gpu_block_size is not None else int(block_size)
+        )
+        self.store_factor = store_block_factor(self.gpu_block_size, self.block_size)
         self.num_ssd_blocks = int(num_ssd_blocks)
         self._unlimited_dram = self.num_blocks <= 0
         self._ssd_enabled = self.num_ssd_blocks > 0
@@ -163,7 +172,8 @@ class MooncakeKvStore(KvStoreBackend):
         return bool(keys) and all(self._has(k) for k in keys)
 
     def seed(self, token_ids: list[int]) -> None:
-        keys = block_keys_from_tokens(token_ids, self.block_size)
+        gpu_keys = block_keys_from_tokens(token_ids, self.gpu_block_size)
+        keys = coarsen_keys_for_store(gpu_keys, self.store_factor)
         self.insert_keys(keys, req_id="seed")
 
     def _evict_ssd(self, req_id: str = "") -> bool:

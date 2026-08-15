@@ -61,6 +61,9 @@ class InferenceConfig(SimulationConfig):
     framework: str = "vllm"
     num_gpu_blocks: int = 1024
     block_size: int = 16
+    #: Store object size in tokens. Must be a multiple of ``block_size``.
+    #: ``None`` (default) uses ``block_size`` (N=1, one Store key per GPU page).
+    store_block_size: int | None = None
     #: Wire KvClient (per replica) + shared KvStoreActor (works for monolith and PD).
     enable_kv_client: bool = False
     #: Floor on KV transfer TimeoutKernel duration (seconds).
@@ -86,6 +89,20 @@ class InferenceConfig(SimulationConfig):
     #: Max concurrent Worker batches per replica (async pipeline depth).
     #: Occupancy held from submit until BatchEnd is fully handled.
     max_inflight_batches: int = 1
+
+    def resolved_store_block_size(self) -> int:
+        """Store page in tokens; equals ``block_size`` when unset."""
+        gpu = int(self.block_size)
+        raw = self.store_block_size
+        if raw is None:
+            return gpu
+        store = int(raw)
+        if store < gpu or store % gpu != 0:
+            raise ValueError(
+                f"store_block_size ({store}) must be a positive multiple of "
+                f"block_size ({gpu})"
+            )
+        return store
 
     def resolved_cluster_type(self) -> str:
         ct = (self.cluster_type or "monolith").lower().strip()

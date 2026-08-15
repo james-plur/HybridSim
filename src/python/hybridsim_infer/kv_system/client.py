@@ -6,7 +6,10 @@ from typing import Any, Callable, Literal, Optional
 
 from hybridsim_infer.kv_system.block_keys import (
     block_aligned_tokens,
+    coarsen_keys_for_store,
     resolve_block_keys,
+    resolve_store_block_size,
+    store_block_factor,
 )
 from hybridsim_infer.messages import KVLookupMsg, KVLookupReplyMsg, KVUpdateMsg
 from hybridsim_infer.workload_generators.analytic_model.configs import (
@@ -40,6 +43,7 @@ class KvClient:
         engine: Any,
         *,
         block_size: int = 16,
+        store_block_size: int | None = None,
         bandwidth_gbps: float = 50.0,
         bytes_per_token: float = 16.0,
         transfer_s_floor: float = 1e-4,
@@ -60,6 +64,10 @@ class KvClient:
         self._profile = profile
         self._replica_id = int(replica_id)
         self.block_size = int(block_size)
+        self.store_block_size = resolve_store_block_size(
+            self.block_size, store_block_size
+        )
+        self.store_factor = store_block_factor(self.block_size, self.store_block_size)
         self.bandwidth_gbps = float(bandwidth_gbps)
         self.bytes_per_token = float(bytes_per_token)
         self.transfer_s_floor = float(transfer_s_floor)
@@ -86,6 +94,9 @@ class KvClient:
                 bandwidth_gbps=bandwidth_gbps,
                 latency_s=kv_latency_s,
                 transfer_s_floor=transfer_s_floor,
+                page_tokens=(
+                    self.block_size if self.store_factor > 1 else 0
+                ),
             )
         # Prefer model-derived bytes/token when available (scalar fallback kept).
         if model_config is not None:
@@ -241,7 +252,10 @@ class KvClient:
             num_tokens=n if n > 0 else None,
             input_length=il if il > 0 else None,
         )
-        return keys, bs, il
+        n_factor = int(getattr(self, "store_factor", 1) or 1)
+        store_keys = coarsen_keys_for_store(keys, n_factor)
+        tpb = int(getattr(self, "store_block_size", 0) or 0) or (n_factor * bs)
+        return store_keys, tpb, il
 
     async def lookup(
         self,
@@ -377,8 +391,8 @@ class KvClient:
         ssd_tokens: int = 0,
         promoted_keys: list[str] | None = None,
     ) -> None:
-        """After local GPU allocate: start async RDMA/pull TimeoutKernel."""
-        _ = local_block_ids  # reserved for future connector meta
+        """After local GPU allocate: async pull into ``local_block_ids``."""
+        ids = [int(x) for x in (local_block_ids or [])]
         ready_keys = list(promoted_keys or [])
         begin_promotions = getattr(self._store, "begin_promotions", None)
         if ready_keys and callable(begin_promotions):
@@ -392,6 +406,7 @@ class KvClient:
             tier=tier,
             ssd_tokens=ssd_tokens,
             block_keys=ready_keys,
+            block_ids=ids,
         )
 
     def submit_push(
@@ -418,6 +433,7 @@ class KvClient:
         tier: Optional[str] = None,
         ssd_tokens: int = 0,
         block_keys: list[str] | None = None,
+        block_ids: Optional[list[int]] = None,
     ) -> None:
         wid = self._next_workload_id
         self._next_workload_id += 1
@@ -431,6 +447,8 @@ class KvClient:
             direction=direction,
             num_tokens=int(num_tokens),
         )
+        if block_ids:
+            workload["block_ids"] = [int(x) for x in block_ids]
         self._inflight[wid] = (
             int(request_id),
             direction,
@@ -438,7 +456,7 @@ class KvClient:
         )
         if self._profile is not None:
             start_s = float(self._owner.sim.now())
-            self._profile.emit_kv_transfer(
+            kwargs: dict[str, Any] = dict(
                 start_s=start_s,
                 duration_s=duration_s,
                 replica_id=self._replica_id,
@@ -446,6 +464,10 @@ class KvClient:
                 direction=str(direction),
                 num_tokens=int(num_tokens),
             )
+            try:
+                self._profile.emit_kv_transfer(**kwargs, block_ids=list(block_ids or []))
+            except TypeError:
+                self._profile.emit_kv_transfer(**kwargs)
         self._engine.send_workload(workload)
 
     def _handle_complete(self, workload_id: int) -> None:

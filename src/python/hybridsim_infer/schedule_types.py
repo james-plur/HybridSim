@@ -42,6 +42,8 @@ class RemoteKvPull:
     ssd_tokens: int = 0
     #: SSD keys promoted into DRAM by this lookup; become visible after pull.
     promoted_keys: list[str] = field(default_factory=list)
+    #: Newly allocated GPU ``block_id``s for this pull (scatter dests).
+    block_ids: list[int] = field(default_factory=list)
 
 
 @dataclass

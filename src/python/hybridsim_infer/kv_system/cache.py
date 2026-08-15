@@ -9,9 +9,12 @@ from typing import Any, Optional
 
 from hybridsim_infer.kv_system.block_keys import (
     block_aligned_tokens,
+    coarsen_keys_for_store,
     full_block_count,
     prefix_hit_tokens,
     resolve_block_keys,
+    resolve_store_block_size,
+    store_block_factor,
 )
 from hybridsim_infer.kv_system.client import KvClient
 from hybridsim_infer.request import InferenceRequest, RequestStatus
@@ -148,6 +151,8 @@ class VllmKvCacheManager(KvCacheManager):
 
     num_gpu_blocks: int = 1024
     block_size: int = 16
+    #: Store object size in tokens (multiple of ``block_size``). Default: same as GPU.
+    store_block_size: int | None = None
     free_blocks: int = 1024
     enable_prefix_caching: bool = False
     allocated: dict[int, list[KvBlock]] = field(default_factory=dict)
@@ -174,6 +179,10 @@ class VllmKvCacheManager(KvCacheManager):
     _prefix_hash_chains: list[list[str]] = field(default_factory=list, init=False)
 
     def __post_init__(self) -> None:
+        self.store_block_size = resolve_store_block_size(
+            self.block_size, self.store_block_size
+        )
+        self.store_factor = store_block_factor(self.block_size, self.store_block_size)
         self._unlimited = int(self.num_gpu_blocks) <= 0
         if self._unlimited:
             self._null_reserved = 0
@@ -593,10 +602,13 @@ class VllmKvCacheManager(KvCacheManager):
         for pull in pulls:
             self._pending_kv_pulls.add(pull.request.request_id)
             tier = getattr(pull, "tier", None)
+            block_ids = [
+                int(x) for x in (getattr(pull, "block_ids", None) or [])
+            ]
             self._client.after_alloc_load(
                 pull.request.request_id,
                 pull.num_tokens,
-                local_block_ids=None,
+                local_block_ids=block_ids or None,
                 tier=tier,
                 ssd_tokens=int(getattr(pull, "ssd_tokens", 0) or 0),
                 promoted_keys=list(getattr(pull, "promoted_keys", []) or []),
@@ -626,40 +638,46 @@ class VllmKvCacheManager(KvCacheManager):
             save_upto = min(computed, prefill_end) if prefill_end > 0 else computed
             if save_upto <= 0:
                 continue
-            aligned = block_aligned_tokens(save_upto, bs)
+            n = int(getattr(self, "store_factor", 1) or 1)
+            store_bs = int(getattr(self, "store_block_size", 0) or 0) or (n * bs)
+            aligned_gpu = block_aligned_tokens(save_upto, bs)
+            aligned_store = (aligned_gpu // store_bs) * store_bs if store_bs > 0 else 0
             saved = int(self._num_saved_tokens.get(rid, 0))
-            chunk_boundary = _cdiv(saved + 1, bs) * bs
-            if aligned < chunk_boundary:
+            if aligned_store <= saved:
                 continue
-            delta = aligned - saved
-            if delta <= 0:
-                continue
-            all_keys = self._prefix_keys_for_request(req, num_tokens=aligned)
-            start_i = saved // bs
-            end_i = aligned // bs
-            keys = all_keys[start_i:end_i]
+            all_gpu_keys = self._prefix_keys_for_request(
+                req, num_tokens=aligned_store
+            )
+            all_store_keys = coarsen_keys_for_store(all_gpu_keys, n)
+            start_w = saved // store_bs if store_bs > 0 else 0
+            end_w = aligned_store // store_bs if store_bs > 0 else 0
+            keys = all_store_keys[start_w:end_w]
             if not keys:
                 continue
-            tokens = list(req.prompt_token_ids[:aligned]) if req.prompt_token_ids else []
+            tokens = (
+                list(req.prompt_token_ids[:aligned_store])
+                if req.prompt_token_ids
+                else []
+            )
             hashes = list(req.hash_ids or [])
             reply = await self._client.save(
                 rid,
                 tokens,
                 hash_ids=hashes or None,
                 block_size=bs,
-                num_tokens=aligned,
-                input_length=prefill_end if prefill_end > 0 else aligned,
+                num_tokens=aligned_store,
+                input_length=prefill_end if prefill_end > 0 else aligned_store,
                 block_keys=keys,
             )
             if not reply or not reply.get("ok"):
                 continue
-            self._num_saved_tokens[rid] = aligned
+            self._num_saved_tokens[rid] = aligned_store
             # Only push newly inserted bytes (not confirm_cached).
             if reply.get("cached"):
                 continue
             n_tok = int(reply.get("num_tokens", 0) or 0)
             if n_tok <= 0:
-                n_tok = delta
+                n_tok = aligned_store - saved
             if n_tok > 0:
                 inserted_keys = list(reply.get("inserted_keys") or [])
                 self._client.submit_push(rid, n_tok, block_keys=inserted_keys)

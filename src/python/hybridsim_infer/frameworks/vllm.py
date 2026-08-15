@@ -237,10 +237,14 @@ class VllmFramework(InferenceFramework):
                         bs = max(1, int(getattr(request, "block_size", 0) or 0))
                         if bs <= 1:
                             bs = max(1, int(getattr(kv_cache_manager, "block_size", 16)))
-                        first_gain_block = request.num_computed_tokens // bs
+                        store_bs = max(
+                            bs,
+                            int(getattr(kv_cache_manager, "store_block_size", bs) or bs),
+                        )
+                        first_gain_block = request.num_computed_tokens // store_bs
                         gained_tiers = block_tiers[first_gain_block:]
                         ssd_tokens = min(
-                            gain, sum(t == "ssd" for t in gained_tiers) * bs
+                            gain, sum(t == "ssd" for t in gained_tiers) * store_bs
                         )
                         hit_keys = list(lookup.get("hit_keys") or [])
                         gained_keys = hit_keys[first_gain_block:]
@@ -262,6 +266,7 @@ class VllmFramework(InferenceFramework):
                     token_ids = list(request.prompt_token_ids[:hit_n])
                     request.status = RequestStatus.WAIT_FOR_REMOTE_KVS
                     request.pending_remote_tokens = hit_n
+                    block_ids = [int(b.block_id) for b in (blocks or [])]
                     remote_pulls.append(
                         RemoteKvPull(
                             request=request,
@@ -270,6 +275,7 @@ class VllmFramework(InferenceFramework):
                             tier=lookup.get("tier"),
                             ssd_tokens=ssd_tokens,
                             promoted_keys=promoted_keys,
+                            block_ids=block_ids,
                         )
                     )
                     still_waiting.append(request)
