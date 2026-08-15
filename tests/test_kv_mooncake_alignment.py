@@ -45,7 +45,7 @@ class SaveGateIncrementalTests(unittest.TestCase):
                     "cached": False,
                 }
 
-            def submit_push(self, rid: int, n: int) -> None:
+            def submit_push(self, rid: int, n: int, **_: Any) -> None:
                 pushes.append(n)
 
         kv.attach_client(_Client())  # type: ignore[arg-type]
@@ -81,7 +81,7 @@ class SaveGateIncrementalTests(unittest.TestCase):
             async def save(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
                 return {"ok": True, "num_tokens": 0, "num_blocks": 0, "cached": True}
 
-            def submit_push(self, rid: int, n: int) -> None:
+            def submit_push(self, rid: int, n: int, **_: Any) -> None:
                 pushes.append(n)
 
         kv.attach_client(_Client())  # type: ignore[arg-type]
@@ -307,7 +307,7 @@ class StoreNBlockSizeTests(unittest.TestCase):
                     "cached": False,
                 }
 
-            def submit_push(self, rid: int, n: int) -> None:
+            def submit_push(self, rid: int, n: int, **_: Any) -> None:
                 pushes.append(n)
 
         kv.attach_client(_Client())  # type: ignore[arg-type]

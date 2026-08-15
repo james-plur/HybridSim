@@ -122,6 +122,7 @@ class KvCacheManager(ABC):
             "num_blocks": int(getattr(msg, "num_blocks", 0) or 0),
             "location": getattr(msg, "location", None),
             "tier": getattr(msg, "tier", None),
+            "ssd_tokens": int(getattr(msg, "ssd_tokens", 0) or 0),
         }
 
     async def save_computed_prefixes(self, requests: list[InferenceRequest]) -> None:
@@ -169,6 +170,11 @@ class VllmKvCacheManager(KvCacheManager):
     )
     _next_block_id: int = field(default=0, init=False)
     _num_saved_tokens: dict[int, int] = field(default_factory=dict, init=False)
+    _hashed_eviction_count: int = field(default=0, init=False)
+    _apc_match_requests: int = field(default=0, init=False)
+    _apc_hit_requests: int = field(default=0, init=False)
+    _apc_hit_tokens: int = field(default=0, init=False)
+    _published_block_count: int = field(default=0, init=False)
     #: Legacy list-of-chains for tests that only call cache_prefix without blocks.
     _prefix_hash_chains: list[list[str]] = field(default_factory=list, init=False)
 
@@ -280,6 +286,7 @@ class VllmKvCacheManager(KvCacheManager):
         if not self._unlimited:
             self.free_blocks = max(0, self.free_blocks - 1)
         if block.block_hash is not None:
+            self._hashed_eviction_count += 1
             self._hash_to_block.pop(block.block_hash, None)
             block.block_hash = None
         block.ref_cnt = 0
@@ -313,6 +320,7 @@ class VllmKvCacheManager(KvCacheManager):
 
     def match(self, request: Any) -> int:
         """Longest contiguous cached prefix in tokens (APC block-hash table)."""
+        self._apc_match_requests += 1
         if not self.enable_prefix_caching and not self._hash_to_block:
             # Still allow chain-list fallback when tests call cache_prefix only.
             pass
@@ -346,7 +354,11 @@ class VllmKvCacheManager(KvCacheManager):
         hit = prefix_hit_tokens(best_blocks, input_len, bs)
         max_hit = max(0, input_len - 1)
         hit = min(hit, max_hit)
-        return (hit // bs) * bs
+        hit = (hit // bs) * bs
+        if hit > 0:
+            self._apc_hit_requests += 1
+            self._apc_hit_tokens += int(hit)
+        return hit
 
     def attach_cached_prefix(
         self, request: Any, num_tokens: int
@@ -416,7 +428,11 @@ class VllmKvCacheManager(KvCacheManager):
         keys = self._prefix_keys_for_request(
             request, num_tokens=n_full * bs if n_full > 0 else int(num_tokens) or None
         )
-        if keys and keys not in self._prefix_hash_chains:
+        if (
+            not self.enable_prefix_caching
+            and keys
+            and keys not in self._prefix_hash_chains
+        ):
             self._prefix_hash_chains.append(keys)
         if not self.enable_prefix_caching or n_full <= 0 or not blocks:
             return
@@ -432,6 +448,7 @@ class VllmKvCacheManager(KvCacheManager):
             if key not in self._hash_to_block:
                 block.block_hash = key
                 self._hash_to_block[key] = block
+                self._published_block_count += 1
             elif self._hash_to_block[key] is block:
                 block.block_hash = key
             else:
@@ -482,6 +499,17 @@ class VllmKvCacheManager(KvCacheManager):
         self.free(request)
         request.num_computed_tokens = 0
         request.pending_remote_tokens = 0
+
+    def stats(self) -> dict[str, int]:
+        """Compact observability counters for cache-capacity experiments."""
+        return {
+            "hashed_evictions": int(self._hashed_eviction_count),
+            "apc_match_requests": int(self._apc_match_requests),
+            "apc_hit_requests": int(self._apc_hit_requests),
+            "apc_hit_tokens": int(self._apc_hit_tokens),
+            "published_blocks": int(self._published_block_count),
+            "resident_hashed_blocks": int(len(self._hash_to_block)),
+        }
 
     # --- remote ---
 
@@ -582,6 +610,8 @@ class VllmKvCacheManager(KvCacheManager):
                 pull.num_tokens,
                 local_block_ids=block_ids or None,
                 tier=tier,
+                ssd_tokens=int(getattr(pull, "ssd_tokens", 0) or 0),
+                promoted_keys=list(getattr(pull, "promoted_keys", []) or []),
             )
 
     def on_lookup_reply(self, msg: Any) -> dict[str, Any]:
@@ -648,8 +678,9 @@ class VllmKvCacheManager(KvCacheManager):
             n_tok = int(reply.get("num_tokens", 0) or 0)
             if n_tok <= 0:
                 n_tok = aligned_store - saved
-            if n_tok > 0 and not req.completed:
-                self._client.submit_push(rid, n_tok)
+            if n_tok > 0:
+                inserted_keys = list(reply.get("inserted_keys") or [])
+                self._client.submit_push(rid, n_tok, block_keys=inserted_keys)
 
     def apply_pull_complete(
         self, request_id: int, waiting: list[InferenceRequest]

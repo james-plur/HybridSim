@@ -101,7 +101,9 @@ class KvClient:
         # Prefer model-derived bytes/token when available (scalar fallback kept).
         if model_config is not None:
             self.bytes_per_token = float(model_bytes_per_token(model_config, num_tokens=1))
-        self._inflight: dict[int, tuple[int, TransferDirection]] = {}
+        self._inflight: dict[
+            int, tuple[int, TransferDirection, list[str]]
+        ] = {}
         self._lookup_cache: dict[int, dict[str, Any]] = {}
         self._next_workload_id = 1
         self._engine.set_on_workload_complete(self._handle_complete)
@@ -121,7 +123,11 @@ class KvClient:
         self._engine.check_error()
 
     def transfer_duration_s(
-        self, num_tokens: int, *, tier: Optional[str] = None
+        self,
+        num_tokens: int,
+        *,
+        tier: Optional[str] = None,
+        ssd_tokens: int = 0,
     ) -> float:
         """α-β duration; SSD hits add NVMe→DRAM staging before network hop."""
         gen = self._workload_generator
@@ -140,7 +146,7 @@ class KvClient:
         if tier != "ssd":
             return net
         staging = transfer_duration_s(
-            num_tokens=int(num_tokens),
+            num_tokens=int(ssd_tokens or num_tokens),
             model=self.model_config,
             bytes_per_token_fallback=self.bytes_per_token,
             network=None,
@@ -209,6 +215,9 @@ class KvClient:
             "num_blocks": int(msg.num_blocks),
             "location": msg.location,
             "tier": getattr(msg, "tier", None),
+            "ssd_tokens": int(getattr(msg, "ssd_tokens", 0) or 0),
+            "block_tiers": list(getattr(msg, "block_tiers", []) or []),
+            "hit_keys": list(getattr(msg, "hit_keys", []) or []),
             "mode": "control_plane" if msg.location is not None else "store",
         }
         self._lookup_cache[int(msg.request_id)] = result
@@ -379,20 +388,41 @@ class KvClient:
         local_block_ids: Optional[list[int]] = None,
         *,
         tier: Optional[str] = None,
+        ssd_tokens: int = 0,
+        promoted_keys: list[str] | None = None,
     ) -> None:
-        """After local GPU allocate: async pull, scatter dests = ``local_block_ids``."""
+        """After local GPU allocate: async pull into ``local_block_ids``."""
         ids = [int(x) for x in (local_block_ids or [])]
+        ready_keys = list(promoted_keys or [])
+        begin_promotions = getattr(self._store, "begin_promotions", None)
+        if ready_keys and callable(begin_promotions):
+            ready_keys = list(
+                begin_promotions(ready_keys, req_id=str(request_id)) or []
+            )
         self._submit_transfer(
             request_id,
             num_tokens,
             direction="pull",
             tier=tier,
+            ssd_tokens=ssd_tokens,
+            block_keys=ready_keys,
             block_ids=ids,
         )
 
-    def submit_push(self, request_id: int, num_tokens: int) -> None:
+    def submit_push(
+        self,
+        request_id: int,
+        num_tokens: int,
+        *,
+        block_keys: list[str] | None = None,
+    ) -> None:
         """After successful ``save``: async push of KV bytes to the pool."""
-        self._submit_transfer(request_id, num_tokens, direction="push")
+        self._submit_transfer(
+            request_id,
+            num_tokens,
+            direction="push",
+            block_keys=block_keys,
+        )
 
     def _submit_transfer(
         self,
@@ -401,11 +431,15 @@ class KvClient:
         *,
         direction: TransferDirection,
         tier: Optional[str] = None,
+        ssd_tokens: int = 0,
+        block_keys: list[str] | None = None,
         block_ids: Optional[list[int]] = None,
     ) -> None:
         wid = self._next_workload_id
         self._next_workload_id += 1
-        duration_s = self.transfer_duration_s(num_tokens, tier=tier)
+        duration_s = self.transfer_duration_s(
+            num_tokens, tier=tier, ssd_tokens=ssd_tokens
+        )
         workload = self._workload_generator(
             workload_id=wid,
             request_id=int(request_id),
@@ -415,7 +449,11 @@ class KvClient:
         )
         if block_ids:
             workload["block_ids"] = [int(x) for x in block_ids]
-        self._inflight[wid] = (int(request_id), direction)
+        self._inflight[wid] = (
+            int(request_id),
+            direction,
+            list(block_keys or []),
+        )
         if self._profile is not None:
             start_s = float(self._owner.sim.now())
             kwargs: dict[str, Any] = dict(
@@ -436,5 +474,9 @@ class KvClient:
         entry = self._inflight.pop(int(workload_id), None)
         if entry is None:
             return
-        request_id, direction = entry
+        request_id, direction, block_keys = entry
+        if block_keys and self._store is not None:
+            mark_ready = getattr(self._store, "mark_ready", None)
+            if callable(mark_ready):
+                mark_ready(block_keys, req_id=str(request_id))
         self._on_transfer_complete(int(workload_id), int(request_id), direction)

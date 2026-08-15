@@ -157,6 +157,14 @@ class MooncakeKvStore(KvStoreBackend):
             return "ssd"
         return None
 
+    def _ready_tier_of(self, key: str) -> Optional[TierName]:
+        tier = self._tier_of(key)
+        if tier == "dram" and not bool(self._dram[key].get("ready", True)):
+            return None
+        if tier == "ssd" and not bool(self._ssd[key].get("ready", True)):
+            return None
+        return tier
+
     def snapshot_hashes(self) -> list[str]:
         return list(self._dram.keys()) + list(self._ssd.keys())
 
@@ -182,19 +190,27 @@ class MooncakeKvStore(KvStoreBackend):
         """Move coldest DRAM key to SSD (or drop if SSD disabled/full)."""
         if not self._dram:
             return False
+        # A metadata reservation whose HBM->DRAM push is still in flight is not
+        # a valid offload victim. Pick the oldest completed block instead.
+        drop_key = next(
+            (k for k, meta in self._dram.items() if bool(meta.get("ready", True))),
+            None,
+        )
+        if drop_key is None:
+            return False
         if not self._ssd_enabled:
-            drop_key, _ = self._dram.popitem(last=False)
+            self._dram.pop(drop_key)
             self.free_blocks += 1
             self._emit("evict", [drop_key], req_id=req_id, tier="dram")
             return True
         while self.free_ssd_blocks <= 0 and self._ssd:
             self._evict_ssd(req_id=req_id)
         if self.free_ssd_blocks <= 0:
-            drop_key, _ = self._dram.popitem(last=False)
+            self._dram.pop(drop_key)
             self.free_blocks += 1
             self._emit("evict", [drop_key], req_id=req_id, tier="dram")
             return True
-        drop_key, meta = self._dram.popitem(last=False)
+        meta = self._dram.pop(drop_key)
         self.free_blocks += 1
         meta = dict(meta)
         meta["tier"] = "ssd"
@@ -203,22 +219,26 @@ class MooncakeKvStore(KvStoreBackend):
         self._emit("offload", [drop_key], req_id=req_id, tier="ssd")
         return True
 
-    def _promote_to_dram(self, key: str, req_id: str = "") -> None:
+    def _promote_to_dram(
+        self, key: str, req_id: str = "", *, ready: bool = True
+    ) -> bool:
         if key not in self._ssd:
-            return
+            return False
         if not self._unlimited_dram and self.free_blocks <= 0:
             if not self._offload_dram_to_ssd(req_id=req_id):
-                return
+                return False
             if self.free_blocks <= 0:
-                return
+                return False
         meta = self._ssd.pop(key)
         self.free_ssd_blocks += 1
         meta = dict(meta)
         meta["tier"] = "dram"
+        meta["ready"] = bool(ready)
         self._dram[key] = meta
         if not self._unlimited_dram:
             self.free_blocks -= 1
         self._emit("promote", [key], req_id=req_id, tier="dram")
+        return True
 
     def lookup_keys(
         self,
@@ -229,12 +249,14 @@ class MooncakeKvStore(KvStoreBackend):
         input_length: int = 0,
     ) -> dict[str, Any]:
         hit_blocks = 0
+        ssd_blocks = 0
         hit_mask: list[bool] = []
         hit_keys: list[str] = []
+        block_tiers: list[str] = []
         # Tier at hit time (before promote): SSD staging still applies after promote.
         worst_tier: Optional[TierName] = None
         for key in keys:
-            tier = self._tier_of(key)
+            tier = self._ready_tier_of(key)
             present = tier is not None
             hit_mask.append(present)
             if not present:
@@ -245,14 +267,16 @@ class MooncakeKvStore(KvStoreBackend):
                     worst_tier = "dram"
             else:
                 assert tier == "ssd"
+                ssd_blocks += 1
                 self._ssd.move_to_end(key)
                 worst_tier = "ssd"
-                # Mooncake-style: promote SSD hits back to DRAM when possible.
-                self._promote_to_dram(key, req_id=req_id)
             hit_keys.append(key)
+            block_tiers.append(tier)
             hit_blocks += 1
         tpb = int(tokens_per_block) if int(tokens_per_block) > 0 else self.block_size
         num_tokens = prefix_hit_tokens(hit_blocks, int(input_length or 0), tpb)
+        dram_blocks = hit_blocks - ssd_blocks
+        ssd_tokens = min(num_tokens, ssd_blocks * tpb)
         self._emit(
             "exist",
             keys[: max(hit_blocks, 0)],
@@ -266,9 +290,16 @@ class MooncakeKvStore(KvStoreBackend):
             "num_tokens": num_tokens,
             "num_blocks": hit_blocks,
             "tier": worst_tier if hit_blocks > 0 else None,
+            "dram_blocks": dram_blocks,
+            "ssd_blocks": ssd_blocks,
+            "ssd_tokens": ssd_tokens,
+            "block_tiers": block_tiers,
+            "hit_keys": hit_keys,
         }
 
-    def insert_keys(self, keys: list[str], *, req_id: str = "") -> dict[str, Any]:
+    def insert_keys(
+        self, keys: list[str], *, req_id: str = "", ready: bool = True
+    ) -> dict[str, Any]:
         need = sum(1 for k in keys if not self._has(k))
         while need > self.free_blocks and self._dram:
             if not self._offload_dram_to_ssd(req_id=req_id):
@@ -285,14 +316,15 @@ class MooncakeKvStore(KvStoreBackend):
                 self._dram.move_to_end(key)
                 continue
             if key in self._ssd:
-                # Already on SSD: touch + promote if possible; not a new insert.
+                # Already persisted on SSD: an incremental save is idempotent.
+                # Do not promote metadata without a modeled SSD->DRAM read.
                 self._ssd.move_to_end(key)
-                self._promote_to_dram(key, req_id=req_id)
                 continue
             self._dram[key] = {
                 "tokens_per_block": self.block_size,
                 "location": location,
                 "tier": "dram",
+                "ready": bool(ready),
             }
             if not self._unlimited_dram:
                 self.free_blocks -= 1
@@ -314,6 +346,22 @@ class MooncakeKvStore(KvStoreBackend):
             "cached": False,
         }
 
+    def mark_ready(self, keys: list[str], *, req_id: str = "") -> int:
+        marked = 0
+        marked_keys: list[str] = []
+        for key in keys:
+            meta = self._dram.get(key)
+            if meta is None:
+                meta = self._ssd.get(key)
+            if meta is None or bool(meta.get("ready", True)):
+                continue
+            meta["ready"] = True
+            marked += 1
+            marked_keys.append(key)
+        if marked:
+            self._emit("ready", marked_keys, req_id=req_id, num_blocks=marked)
+        return marked
+
     def confirm_cached(self, keys: list[str], *, req_id: str = "") -> dict[str, Any]:
         worst_tier: TierName = "dram"
         for k in keys:
@@ -325,7 +373,6 @@ class MooncakeKvStore(KvStoreBackend):
             else:
                 self._ssd.move_to_end(k)
                 worst_tier = "ssd"
-                self._promote_to_dram(k, req_id=req_id)
         self._emit(
             "exist",
             keys,
