@@ -1,4 +1,4 @@
-"""Unit tests for KV / Mooncake management alignment (save gate, APC, SSD)."""
+"""Unit tests for KV / Mooncake management alignment (save gate, APC, DRAM LRU)."""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ import asyncio
 import os
 import unittest
 from typing import Any
-from unittest.mock import MagicMock
 
 os.environ.setdefault("PYTHONHASHSEED", "0")
 
@@ -18,9 +17,7 @@ from hybridsim_infer.kv_system.block_keys import (
     resolve_store_block_size,
     store_block_factor,
 )
-from hybridsim_infer.kv_system.client import KvClient
 from hybridsim_infer.request import InferenceRequest, RequestStatus
-from hybridsim_infer.workload_generators.kv_transfer import transfer_duration_s
 
 
 class SaveGateIncrementalTests(unittest.TestCase):
@@ -174,7 +171,7 @@ class BlockPoolApcTests(unittest.TestCase):
         self.assertEqual(len(kv.allocated[1]), 4)
 
 
-class StoreCapacitySsdTests(unittest.TestCase):
+class StoreCapacityDramTests(unittest.TestCase):
     def setUp(self) -> None:
         reset_none_hash()
 
@@ -199,52 +196,17 @@ class StoreCapacitySsdTests(unittest.TestCase):
         self.assertTrue(cached["cached"])
         self.assertEqual(cached["num_tokens"], 0)
 
-    def test_ssd_offload_hit_tier(self) -> None:
-        store = MooncakeKvStore(num_blocks=1, block_size=16, num_ssd_blocks=2)
+    def test_dram_lru_evicts_coldest(self) -> None:
+        store = MooncakeKvStore(num_blocks=1, block_size=16)
         k_a = block_keys_from_tokens(list(range(16)), 16)
         k_b = block_keys_from_tokens(list(range(16, 32)), 16)
         self.assertTrue(store.insert_keys(k_a, req_id="1")["ok"])
         self.assertTrue(store.insert_keys(k_b, req_id="2")["ok"])
-        # A should have been offloaded to SSD.
-        hit = store.lookup_keys(k_a, req_id="3", tokens_per_block=16, input_length=16)
+        miss = store.lookup_keys(k_a, req_id="3", tokens_per_block=16, input_length=16)
+        self.assertFalse(miss["hit"])
+        hit = store.lookup_keys(k_b, req_id="4", tokens_per_block=16, input_length=16)
         self.assertTrue(hit["hit"])
-        self.assertEqual(hit["tier"], "ssd")
-
-    def test_ssd_staging_duration(self) -> None:
-        owner = MagicMock()
-        owner.sim.now.return_value = 0.0
-        engine = MagicMock()
-        client = KvClient(
-            owner,
-            store=None,
-            engine=engine,
-            bandwidth_gbps=50.0,
-            bytes_per_token=16.0,
-            transfer_s_floor=0.0,
-            kv_latency_s=0.0,
-            ssd_bandwidth_gbps=6.0,
-            ssd_latency_s=0.001,
-            on_transfer_complete=lambda *a: None,
-        )
-        tokens = 16
-        net = transfer_duration_s(
-            num_tokens=tokens,
-            bytes_per_token_fallback=16.0,
-            bandwidth_gbps=50.0,
-            latency_s=0.0,
-            transfer_s_floor=0.0,
-        )
-        staging = transfer_duration_s(
-            num_tokens=tokens,
-            bytes_per_token_fallback=16.0,
-            bandwidth_gbps=6.0,
-            latency_s=0.001,
-            transfer_s_floor=0.0,
-        )
-        dram = client.transfer_duration_s(tokens, tier="dram")
-        ssd = client.transfer_duration_s(tokens, tier="ssd")
-        self.assertAlmostEqual(dram, net, places=9)
-        self.assertAlmostEqual(ssd, staging + net, places=9)
+        self.assertEqual(len(store.snapshot_hashes()), 1)
 
 
 class StoreNBlockSizeTests(unittest.TestCase):
@@ -352,7 +314,7 @@ class StoreNBlockSizeTests(unittest.TestCase):
         )
 
         async def remote_lookup(_request: InferenceRequest) -> dict[str, Any]:
-            return {"hit": True, "num_tokens": 64, "tier": "dram"}
+            return {"hit": True, "num_tokens": 64}
 
         result = asyncio.run(
             fw.process_wait_queue(

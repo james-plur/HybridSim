@@ -54,8 +54,6 @@ def _sched_cfg(case: CaseSpec) -> dict[str, Any]:
         "enable_remote_store": bool(s.get("enable_remote_store", True)),
         # Offline Mooncake pool capacity (blocks). ``<=0`` → unlimited DRAM.
         "store_num_blocks": int(s.get("store_num_blocks", 4096)),
-        # SSD tier (``<=0`` → disabled).
-        "store_ssd_blocks": int(s.get("store_ssd_blocks", 0)),
     }
 
 
@@ -101,7 +99,6 @@ async def _run_async(
     pool = MooncakeKvStore(
         num_blocks=cfg["store_num_blocks"],
         block_size=cfg["block_size"],
-        num_ssd_blocks=cfg["store_ssd_blocks"],
         profile_fn=_pool_profile,
         profile_step_fn=lambda: step_box["step"],
     )
@@ -110,13 +107,12 @@ async def _run_async(
 
     def remote_lookup(request: InferenceRequest) -> dict[str, Any]:
         if not cfg["enable_remote_store"]:
-            return {"hit": False, "num_tokens": 0, "tier": None}
+            return {"hit": False, "num_tokens": 0}
         keys = block_keys_from_tokens(request.prompt_token_ids, cfg["block_size"])
         result = pool.lookup_keys(keys, req_id=str(request.request_id))
         return {
             "hit": bool(result.get("hit")),
             "num_tokens": int(result.get("num_tokens", 0)),
-            "tier": result.get("tier"),
         }
 
     pending = sorted(case.requests, key=lambda r: (r.arrive_step, r.request_id))

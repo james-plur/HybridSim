@@ -49,7 +49,7 @@ DES/`ReplicaSchedulerActor` 与 offline driver 共用 `schedule_step`。
 |------|-----------|------------------------|
 | 调度实现 | [`VllmFramework`](../../../src/python/hybridsim_infer/frameworks/vllm.py) | `vllm.v1.core.sched.scheduler.Scheduler` |
 | 工厂入口 | [`FrameworkFactory`](../../../src/python/hybridsim_infer/frameworks/factory.py) | （真实库，driver 直接构造） |
-| KV 容量 | [`VllmKvCacheManager`](../../../src/python/hybridsim_infer/kv_system/cache.py) | `KVCacheManager.allocate_slots` + `BlockPool` |
+| KV 容量 | [`VllmKvCacheManager`](../../../src/python/hybridsim_infer/kv_system/kv_managers.py) | `KVCacheManager.allocate_slots` + `BlockPool` |
 | 假执行 | `on_batch_complete` 推进 computed/output | `ModelRunnerOutput` 采样，不跑模型 |
 | 仿真 Actor 路径 | `ReplicaSchedulerActor` → `framework.schedule_step` | 不对齐 DES，仅校准 schedule |
 
@@ -196,11 +196,11 @@ APC 命中上限与 vLLM 一致：`max_cache_hit_length = prompt_len - 1`，再�
 
 **不**用公开 remapped `hash_ids` trace 直接与 vLLM APC hasher 对比（hasher 不同）；本校准用同一 `prompt_token_ids` + 同款 block hash。
 
-### 3.8 Store / SSD（与 schedule case 正交时）
+### 3.8 Store（与 schedule case 正交时）
 
-- DRAM：`kv_store_blocks`（`<=0` 无限）；满则 LRU 淘汰，或 offload 到 SSD（若开启）。
-- SSD：`kv_store_ssd_blocks`（`<=0` 关闭）；lookup hit 带 `tier`；pull 时延 = staging（`kv_ssd_bandwidth_gbps` / `kv_ssd_latency_s`，有效 NVMe 读）+ 网络 α-β。
+- DRAM：`kv_store_blocks`（`<=0` 无限）；满则 LRU 淘汰。
 - 写池：仅满块越过 `num_saved` 边界才 put/push；`confirm_cached` 不 push。
+- pull 时延：网络 α-β（`kv_bandwidth_gbps` / `kv_latency_s`）。
 
 ### 3.9 配置旋钮对照
 
@@ -274,7 +274,7 @@ CLI：`PYTHONPATH=src/python:tests:. python -m schedule_alignment.run_case --cas
 
 1. [`frameworks/base.py`](../../src/python/hybridsim_infer/frameworks/base.py) — 扩展点  
 2. [`frameworks/vllm.py`](../../src/python/hybridsim_infer/frameworks/vllm.py) — 对齐核心  
-3. [`kv_system/cache.py`](../../src/python/hybridsim_infer/kv_system/cache.py) — null block / allocate / can_fit  
+3. [`kv_system/kv_managers.py`](../../src/python/hybridsim_infer/kv_system/kv_managers.py) — null block / allocate / can_fit  
 4. [`request.py`](../../src/python/hybridsim_infer/request.py) — `num_tokens` / `num_output_tokens`  
 5. [`actors/replica_scheduler.py`](../../src/python/hybridsim_infer/actors/replica_scheduler.py) — DES 里如何调用 framework  
 6. [`hybridsim_schedule_driver.py`](hybridsim_schedule_driver.py) + [`vllm_schedule_driver.py`](vllm_schedule_driver.py) — 双端 ledger  

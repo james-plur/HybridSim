@@ -36,11 +36,11 @@ PD（`MooncakeConnector`）用 DES `cluster_type=pd` 做 handoff smoke；**池 p
 |--------|---------------------------|---------------------|
 | 实例内调度 | `vllm.v1.core.sched.Scheduler` | `frameworks.VllmFramework.schedule_step` |
 | 本地 GPU 块 | `KVCacheManager` / BlockPool（ref_cnt、命中复用、allocate 时挂满块） | `kv_system.VllmKvCacheManager`（轻量 BlockPool；`num_gpu_blocks<=0` 无限） |
-| Store 元数据池 | `mooncake_master` + Store connector（DRAM；压力可落盘） | `MooncakeKvStore`：DRAM + 可选 SSD；`kv_store_blocks<=0` 无限 DRAM；`kv_store_ssd_blocks<=0` 关 SSD |
+| Store 元数据池 | `mooncake_master` + Store connector（DRAM；压力可落盘） | `MooncakeKvStore`：DRAM LRU；`kv_store_blocks<=0` 无限 DRAM |
 | 写池 / put 量 | 满块门控 + 增量 suffix put | `save_computed_prefixes`：`num_saved` + `aligned` 门控；`insert_keys` 返回增量 token |
-| Store worker CRUD 打点 | `mooncake/store/pool_profile.py` + `worker.py` | `_emit` / `pool_recorder`（含 `offload` / `promote`） |
+| Store worker CRUD 打点 | `mooncake/store/pool_profile.py` + `worker.py` | `_emit` / `pool_recorder`（`exist` / `put` / `get` / `evict`） |
 | Store 客户端 | connector / Mooncake client | `kv_system.KvClient` |
-| 传输时长仿真 | 真实 RDMA / SSD→DRAM staging（本阶段不对齐数值） | DRAM：`α_net+B/BW_net`；SSD 另加 `α_ssd+B/BW_ssd`（`kv_ssd_*`，有效 NVMe 读带宽） |
+| 传输时长仿真 | 真实 RDMA（本阶段不对齐数值） | DRAM：`α_net+B/BW_net`（`kv_bandwidth_gbps` / `kv_latency_s`） |
 | Store Actor 外壳 | （进程外 master） | `actors.KvStoreActor`（只收 Msg） |
 | PD handoff | `MooncakeConnector` + proxy | Cluster `RequestHandoffMsg` + `cluster_type=pd` |
 | Block hash | vLLM `hash_block_tokens` | `kv_system.block_keys`（同算法） |
@@ -141,7 +141,7 @@ print('ok')
 "
 ```
 
-Case JSON 可用 `scheduler.store_num_blocks` 限制 offline DRAM 容量（默认 4096；`<=0` 无限），用于触发 LRU / SSD `offload`；`store_ssd_blocks` 开启 SSD 层（`<=0` 关闭）。
+Case JSON 可用 `scheduler.store_num_blocks` 限制 offline DRAM 容量（默认 4096；`<=0` 无限），用于触发 LRU `evict`。
 
 Offline put 与 DES 一致：仅当 `floor(computed/bs)*bs` 越过已 save 满块边界时，对增量 keys 调用 `insert_keys`。
 

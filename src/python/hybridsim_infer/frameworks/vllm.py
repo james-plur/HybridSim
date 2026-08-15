@@ -246,7 +246,6 @@ class VllmFramework(InferenceFramework):
                             request=request,
                             num_tokens=gain,
                             token_ids=token_ids,
-                            tier=lookup.get("tier"),
                             block_ids=block_ids,
                         )
                     )

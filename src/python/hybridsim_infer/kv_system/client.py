@@ -49,8 +49,6 @@ class KvClient:
         transfer_s_floor: float = 1e-4,
         kv_latency_s: float = 0.0,
         lookup_rtt_s: float = 1e-3,
-        ssd_bandwidth_gbps: float = 6.0,
-        ssd_latency_s: float = 0.0,
         on_transfer_complete: Callable[[int, int, str], None],
         workload_generator: Optional[KvTransferWorkloadGenerator] = None,
         model_config: Optional[ModelConfig] = None,
@@ -73,8 +71,6 @@ class KvClient:
         self.transfer_s_floor = float(transfer_s_floor)
         self.kv_latency_s = float(kv_latency_s)
         self.lookup_rtt_s = float(lookup_rtt_s)
-        self.ssd_bandwidth_gbps = float(ssd_bandwidth_gbps)
-        self.ssd_latency_s = float(ssd_latency_s)
         self.model_config = model_config
         self.network_config = network_config
         self._on_transfer_complete = on_transfer_complete
@@ -120,35 +116,20 @@ class KvClient:
     def check_error(self) -> None:
         self._engine.check_error()
 
-    def transfer_duration_s(
-        self, num_tokens: int, *, tier: Optional[str] = None
-    ) -> float:
-        """α-β duration; SSD hits add NVMe→DRAM staging before network hop."""
+    def transfer_duration_s(self, num_tokens: int) -> float:
+        """α-β network duration for a DRAM-pool transfer."""
         gen = self._workload_generator
         if hasattr(gen, "estimate_duration_s"):
-            net = float(gen.estimate_duration_s(int(num_tokens)))
-        else:
-            net = transfer_duration_s(
-                num_tokens=int(num_tokens),
-                model=self.model_config,
-                bytes_per_token_fallback=self.bytes_per_token,
-                network=self.network_config,
-                bandwidth_gbps=self.bandwidth_gbps,
-                latency_s=self.kv_latency_s,
-                transfer_s_floor=self.transfer_s_floor,
-            )
-        if tier != "ssd":
-            return net
-        staging = transfer_duration_s(
+            return float(gen.estimate_duration_s(int(num_tokens)))
+        return transfer_duration_s(
             num_tokens=int(num_tokens),
             model=self.model_config,
             bytes_per_token_fallback=self.bytes_per_token,
-            network=None,
-            bandwidth_gbps=self.ssd_bandwidth_gbps,
-            latency_s=self.ssd_latency_s,
-            transfer_s_floor=0.0,
+            network=self.network_config,
+            bandwidth_gbps=self.bandwidth_gbps,
+            latency_s=self.kv_latency_s,
+            transfer_s_floor=self.transfer_s_floor,
         )
-        return float(staging) + float(net)
 
     def control_plane_hit(
         self,
@@ -168,7 +149,6 @@ class KvClient:
             "num_blocks": aligned // bs if bs else 0,
             "location": location,
             "mode": "control_plane",
-            "tier": None,
         }
 
     def lookup_control_plane(
@@ -195,7 +175,6 @@ class KvClient:
             num_tokens=int(result["num_tokens"]),
             num_blocks=int(result["num_blocks"]),
             location=location,
-            tier=None,
         )
         return {"pending": True}
 
@@ -208,7 +187,6 @@ class KvClient:
             "num_tokens": int(msg.num_tokens),
             "num_blocks": int(msg.num_blocks),
             "location": msg.location,
-            "tier": getattr(msg, "tier", None),
             "mode": "control_plane" if msg.location is not None else "store",
         }
         self._lookup_cache[int(msg.request_id)] = result
@@ -260,7 +238,7 @@ class KvClient:
     ) -> dict[str, Any]:
         """Sync metadata lookup on master (block-aligned hit length)."""
         if self._store is None:
-            return {"hit": False, "num_tokens": 0, "num_blocks": 0, "tier": None}
+            return {"hit": False, "num_tokens": 0, "num_blocks": 0}
         keys, tpb, il = self.keys_for_prompt(
             token_ids=token_ids,
             hash_ids=hash_ids,
@@ -300,7 +278,6 @@ class KvClient:
                 hit=False,
                 num_tokens=0,
                 num_blocks=0,
-                tier=None,
             )
             return
         keys, tpb, il = self.keys_for_prompt(
@@ -377,8 +354,6 @@ class KvClient:
         request_id: int,
         num_tokens: int,
         local_block_ids: Optional[list[int]] = None,
-        *,
-        tier: Optional[str] = None,
     ) -> None:
         """After local GPU allocate: async pull, scatter dests = ``local_block_ids``."""
         ids = [int(x) for x in (local_block_ids or [])]
@@ -386,7 +361,6 @@ class KvClient:
             request_id,
             num_tokens,
             direction="pull",
-            tier=tier,
             block_ids=ids,
         )
 
@@ -400,12 +374,11 @@ class KvClient:
         num_tokens: int,
         *,
         direction: TransferDirection,
-        tier: Optional[str] = None,
         block_ids: Optional[list[int]] = None,
     ) -> None:
         wid = self._next_workload_id
         self._next_workload_id += 1
-        duration_s = self.transfer_duration_s(num_tokens, tier=tier)
+        duration_s = self.transfer_duration_s(num_tokens)
         workload = self._workload_generator(
             workload_id=wid,
             request_id=int(request_id),

@@ -74,8 +74,6 @@ class KVLookupReplyMsg:
     num_tokens: int = 0
     num_blocks: int = 0
     location: Any = None
-    #: ``dram`` / ``ssd`` at hit time (before promote); used for pull staging.
-    tier: Any = None
 
 
 @dataclass

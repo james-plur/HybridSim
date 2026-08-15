@@ -19,7 +19,7 @@ from hybridsim_infer.kv_system.block_keys import (
     store_block_factor,
     store_tokens_per_key,
 )
-from hybridsim_infer.kv_system.cache import KvBlock, KvCacheManager, VllmKvCacheManager
+from hybridsim_infer.kv_system.kv_managers import KvBlock, KvCacheManager, VllmKvCacheManager
 from hybridsim_infer.kv_system.client import KvClient
 from hybridsim_infer.kv_system.store_backend import (
     KvStoreBackend,

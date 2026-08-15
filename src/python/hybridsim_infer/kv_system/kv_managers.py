@@ -121,7 +121,6 @@ class KvCacheManager(ABC):
             "num_tokens": int(getattr(msg, "num_tokens", 0) or 0),
             "num_blocks": int(getattr(msg, "num_blocks", 0) or 0),
             "location": getattr(msg, "location", None),
-            "tier": getattr(msg, "tier", None),
         }
 
     async def save_computed_prefixes(self, requests: list[InferenceRequest]) -> None:
@@ -573,7 +572,6 @@ class VllmKvCacheManager(KvCacheManager):
             return
         for pull in pulls:
             self._pending_kv_pulls.add(pull.request.request_id)
-            tier = getattr(pull, "tier", None)
             block_ids = [
                 int(x) for x in (getattr(pull, "block_ids", None) or [])
             ]
@@ -581,7 +579,6 @@ class VllmKvCacheManager(KvCacheManager):
                 pull.request.request_id,
                 pull.num_tokens,
                 local_block_ids=block_ids or None,
-                tier=tier,
             )
 
     def on_lookup_reply(self, msg: Any) -> dict[str, Any]:

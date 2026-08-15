@@ -76,12 +76,6 @@ class InferenceConfig(SimulationConfig):
     kv_latency_s: float = 0.0
     #: Remote KV store DRAM capacity in blocks (``<=0`` → unlimited).
     kv_store_blocks: int = 4096
-    #: SSD tier capacity in blocks (``<=0`` → SSD disabled).
-    kv_store_ssd_blocks: int = 0
-    #: Effective NVMe sequential-read bandwidth for SSD→DRAM staging (GB/s).
-    kv_ssd_bandwidth_gbps: float = 6.0
-    #: Fixed latency α (seconds) for SSD→DRAM staging.
-    kv_ssd_latency_s: float = 0.0
     #: Fire-and-forget Store lookup + ReplyMsg; pending ≈ vLLM ``None``.
     kv_lookup_async: bool = False
     #: Simulated lookup / Prefill control-plane RTT (seconds).

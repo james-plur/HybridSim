@@ -127,7 +127,6 @@ def build_inference_simulation(
             num_blocks=config.kv_store_blocks,
             block_size=store_bs,
             gpu_block_size=config.block_size,
-            num_ssd_blocks=getattr(config, "kv_store_ssd_blocks", 0),
         )
 
     profile_arg = profile if getattr(profile, "enabled", False) else None
@@ -166,8 +165,6 @@ def build_inference_simulation(
             kv_bandwidth_gbps=config.kv_bandwidth_gbps,
             kv_bytes_per_token=config.kv_bytes_per_token,
             kv_latency_s=getattr(config, "kv_latency_s", 0.0),
-            kv_ssd_bandwidth_gbps=getattr(config, "kv_ssd_bandwidth_gbps", 6.0),
-            kv_ssd_latency_s=getattr(config, "kv_ssd_latency_s", 0.0),
             kv_lookup_async=config.kv_lookup_async,
             kv_lookup_rtt_s=config.kv_lookup_rtt_s,
             max_num_scheduled_tokens=config.max_num_scheduled_tokens,
