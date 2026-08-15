@@ -5,7 +5,7 @@ from __future__ import annotations
 import inspect
 from typing import Any, Optional
 
-from hybridsim_infer.frameworks.base import InferenceFramework, RemoteLookupFn
+from hybridsim_infer.schedulers.factory import InferenceScheduler, RemoteLookupFn
 from hybridsim_infer.request import InferenceRequest, RequestStatus
 from hybridsim_infer.schedule_types import (
     DecodeChunk,
@@ -16,7 +16,7 @@ from hybridsim_infer.schedule_types import (
 )
 
 
-class VllmFramework(InferenceFramework):
+class VllmScheduler(InferenceScheduler):
     """vLLM-like Phase1 RUNNING + Phase2 WAITING scheduler."""
 
     name = "vllm"

@@ -10,7 +10,7 @@
 |------|------|
 | `schedule_alignment.md` | hybridsim ↔ vLLM 调度语义与代码映射 |
 | `schema.py` / `compare.py` | Step ledger + diff（含可选 KV/prefix 字段） |
-| `hybridsim_schedule_driver.py` | Drive `FrameworkFactory` → `schedule_step` offline |
+| `hybridsim_schedule_driver.py` | Drive `SchedulerFactory` → `schedule_step` offline |
 | `vllm_schedule_driver.py` | Real vLLM `Scheduler` offline (fake `ModelRunnerOutput`, CPU, no GPU) |
 | `cases/*.json` | Shared fixtures |
 | `cases/*.expected.ledger.jsonl` | Golden hybridsim ledgers |

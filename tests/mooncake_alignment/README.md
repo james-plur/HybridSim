@@ -34,7 +34,7 @@ PD（`MooncakeConnector`）用 DES `cluster_type=pd` 做 handoff smoke；**池 p
 
 | 关注点 | 真实侧（vLLM + Mooncake） | 仿真侧（hybridsim） |
 |--------|---------------------------|---------------------|
-| 实例内调度 | `vllm.v1.core.sched.Scheduler` | `frameworks.VllmFramework.schedule_step` |
+| 实例内调度 | `vllm.v1.core.sched.Scheduler` | `schedulers.VllmScheduler.schedule_step` |
 | 本地 GPU 块 | `KVCacheManager` / BlockPool（ref_cnt、命中复用、allocate 时挂满块） | `kv_system.VllmKvCacheManager`（轻量 BlockPool；`num_gpu_blocks<=0` 无限） |
 | Store 元数据池 | `mooncake_master` + Store connector（DRAM；压力可落盘） | `MooncakeKvStore`：DRAM LRU；`kv_store_blocks<=0` 无限 DRAM |
 | 写池 / put 量 | 满块门控 + 增量 suffix put | `save_computed_prefixes`：`num_saved` + `aligned` 门控；`insert_keys` 返回增量 token |
@@ -50,7 +50,7 @@ PD（`MooncakeConnector`）用 DES `cluster_type=pd` 做 handoff smoke；**池 p
 Replica 远端决策统一走 Manager：
 
 ```text
-ReplicaSchedulerActor
+ReplicaActor
   └─ VllmKvCacheManager
         ├─ 本地 match / allocate / free / cache_prefix
         └─ attach_client(KvClient)

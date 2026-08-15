@@ -57,7 +57,7 @@ class InferenceConfig(SimulationConfig):
     reserve_full_isl: bool = True
     #: Local token-list prefix cache (not vLLM APC hashes). Off by default.
     enable_prefix_caching: bool = False
-    #: Schedule backend: ``vllm`` (more via ``FrameworkFactory.register``).
+    #: Schedule backend: ``vllm`` (more via ``SchedulerFactory.register``).
     framework: str = "vllm"
     num_gpu_blocks: int = 1024
     block_size: int = 16

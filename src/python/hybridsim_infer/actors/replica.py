@@ -1,4 +1,4 @@
-"""ReplicaSchedulerActor: wait/run queues, Step loop, Worker + KV via manager."""
+"""ReplicaActor: wait/run queues, Step loop, Worker + KV via manager."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from typing import Any, Optional
 from hybridsim import ActorBase, on
 
 from hybridsim_infer.actors.worker_engine import WorkerEngine
-from hybridsim_infer.frameworks import FrameworkFactory, InferenceFramework
+from hybridsim_infer.schedulers import SchedulerFactory, InferenceScheduler
 from hybridsim_infer.kv_system import KvCacheManager, KvClient, VllmKvCacheManager
 from hybridsim_infer.messages import (
     BatchEndMsg,
@@ -25,7 +25,7 @@ from hybridsim_infer.workload_generators import (
 )
 
 
-class ReplicaSchedulerActor(ActorBase):
+class ReplicaActor(ActorBase):
     def __init__(
         self,
         *,
@@ -38,7 +38,7 @@ class ReplicaSchedulerActor(ActorBase):
         kv_cache_manager: Optional[KvCacheManager] = None,
         kv_store: Any = None,
         kv_engine=None,
-        framework: Optional[InferenceFramework] = None,
+        scheduler: Optional[InferenceScheduler] = None,
         step_interval: float = 1e-3,
         dummy_exec_s: float = 0.05,
         kv_transfer_s: float = 1e-4,
@@ -55,7 +55,7 @@ class ReplicaSchedulerActor(ActorBase):
         long_prefill_token_threshold: int = 0,
         reserve_full_isl: bool = True,
         enable_prefix_caching: bool = False,
-        framework_name: str = "vllm",
+        scheduler_name: str = "vllm",
         duration_mode: str = "fixed",
         prefill_s_per_token: float = 1e-4,
         decode_s_per_token: float = 1e-3,
@@ -78,8 +78,8 @@ class ReplicaSchedulerActor(ActorBase):
         self._max_num_scheduled_tokens = int(max_num_scheduled_tokens)
         self._max_num_running_reqs = int(max_num_running_reqs)
         self._kv: KvCacheManager = kv_cache_manager or VllmKvCacheManager()
-        self._framework = framework or FrameworkFactory.create(
-            framework_name,
+        self._scheduler = scheduler or SchedulerFactory.create(
+            scheduler_name,
             tokens_per_step=tokens_per_step,
             decode_tokens_per_step=decode_tokens_per_step,
             long_prefill_token_threshold=long_prefill_token_threshold,
@@ -110,7 +110,7 @@ class ReplicaSchedulerActor(ActorBase):
         self._step_armed = False
 
         if engine is None:
-            raise ValueError("ReplicaSchedulerActor requires an EngineActor")
+            raise ValueError("ReplicaActor requires an EngineActor")
         self._worker = WorkerEngine(
             engine,
             on_batch_complete=self._on_worker_complete,
@@ -150,7 +150,7 @@ class ReplicaSchedulerActor(ActorBase):
             )
             if hasattr(self._kv, "enable_prefix_caching"):
                 self._kv.enable_prefix_caching = bool(
-                    getattr(self._framework, "enable_prefix_caching", False)
+                    getattr(self._scheduler, "enable_prefix_caching", False)
                 )
             self._kv.attach_client(
                 client,
@@ -208,7 +208,7 @@ class ReplicaSchedulerActor(ActorBase):
         req.kv_transfer_params = params
         req.completed = False
         # Prefill completes before decode tokens: still publish local prefix for reuse.
-        if getattr(self._framework, "enable_prefix_caching", False):
+        if getattr(self._scheduler, "enable_prefix_caching", False):
             cache_req = getattr(self._kv, "cache_request_prefix", None)
             if callable(cache_req):
                 cache_req(req)
@@ -270,7 +270,7 @@ class ReplicaSchedulerActor(ActorBase):
                 self._kv.remote_lookup if self._kv.remote_enabled else None
             )
             sched_t0 = float(self.sim.now())
-            result = await self._framework.schedule_step(
+            result = await self._scheduler.schedule_step(
                 waiting,
                 running_ready,
                 kv_cache_manager=self._kv,
@@ -343,7 +343,7 @@ class ReplicaSchedulerActor(ActorBase):
             self._arm_step()
             return
 
-        finished = self._framework.on_batch_complete(
+        finished = self._scheduler.on_batch_complete(
             list(sched.requests),
             sched.tokens_per_request,
             self._kv,

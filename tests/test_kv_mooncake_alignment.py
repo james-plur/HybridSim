@@ -9,7 +9,7 @@ from typing import Any
 
 os.environ.setdefault("PYTHONHASHSEED", "0")
 
-from hybridsim_infer.frameworks.vllm import VllmFramework
+from hybridsim_infer.schedulers.vllm_schedule import VllmScheduler
 from hybridsim_infer.kv_system import MooncakeKvStore, VllmKvCacheManager, block_keys_from_tokens
 from hybridsim_infer.kv_system.block_keys import (
     coarsen_keys_for_store,
@@ -300,7 +300,7 @@ class StoreNBlockSizeTests(unittest.TestCase):
         kv = VllmKvCacheManager(
             num_gpu_blocks=32, block_size=16, store_block_size=64
         )
-        fw = VllmFramework(
+        fw = VllmScheduler(
             tokens_per_step=64,
             reserve_full_isl=False,
             enable_prefix_caching=False,

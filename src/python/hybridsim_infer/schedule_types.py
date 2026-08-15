@@ -1,4 +1,4 @@
-"""Schedule DTOs used by frameworks, actors, and workload_generators."""
+"""Schedule DTOs used by schedulers, actors, and workload_generators."""
 
 from __future__ import annotations
 

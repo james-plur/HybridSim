@@ -24,7 +24,7 @@ schedule_step:
 on_batch_complete / update_from_output: 推进 computed/output；finish → free (+ cache prefix)
 ```
 
-DES/`ReplicaSchedulerActor` 与 offline driver 共用 `schedule_step`。
+DES/`ReplicaActor` 与 offline driver 共用 `schedule_step`。
 
 ---
 
@@ -36,9 +36,9 @@ DES/`ReplicaSchedulerActor` 与 offline driver 共用 `schedule_step`。
               ┌───────────────┴───────────────┐
               ▼                               ▼
    hybridsim_schedule_driver          vllm_schedule_driver
-   FrameworkFactory.create("vllm")    vllm.v1.core.sched.Scheduler
-   VllmFramework.schedule_step()      Scheduler.schedule()
-   VllmFramework.on_batch_complete()  update_from_output(fake ModelRunnerOutput)
+   SchedulerFactory.create("vllm")    vllm.v1.core.sched.Scheduler
+   VllmScheduler.schedule_step()      Scheduler.schedule()
+   VllmScheduler.on_batch_complete()  update_from_output(fake ModelRunnerOutput)
               │                               │
               └──────────┬────────────────────┘
                          ▼
@@ -47,22 +47,22 @@ DES/`ReplicaSchedulerActor` 与 offline driver 共用 `schedule_step`。
 
 | 角色 | hybridsim | vLLM（offline driver） |
 |------|-----------|------------------------|
-| 调度实现 | [`VllmFramework`](../../../src/python/hybridsim_infer/frameworks/vllm.py) | `vllm.v1.core.sched.scheduler.Scheduler` |
-| 工厂入口 | [`FrameworkFactory`](../../../src/python/hybridsim_infer/frameworks/factory.py) | （真实库，driver 直接构造） |
+| 调度实现 | [`VllmScheduler`](../../../src/python/hybridsim_infer/schedulers/vllm_schedule.py) | `vllm.v1.core.sched.scheduler.Scheduler` |
+| 工厂入口 | [`SchedulerFactory`](../../../src/python/hybridsim_infer/schedulers/factory.py) | （真实库，driver 直接构造） |
 | KV 容量 | [`VllmKvCacheManager`](../../../src/python/hybridsim_infer/kv_system/kv_managers.py) | `KVCacheManager.allocate_slots` + `BlockPool` |
 | 假执行 | `on_batch_complete` 推进 computed/output | `ModelRunnerOutput` 采样，不跑模型 |
-| 仿真 Actor 路径 | `ReplicaSchedulerActor` → `framework.schedule_step` | 不对齐 DES，仅校准 schedule |
+| 仿真 Actor 路径 | `ReplicaActor` → `scheduler.schedule_step` | 不对齐 DES，仅校准 schedule |
 
 关键抽象：
 
 ```python
-# hybridsim_infer/frameworks/base.py
-class InferenceFramework(ABC):
+# hybridsim_infer/schedulers/factory.py
+class InferenceScheduler(ABC):
     def schedule_step(...) -> ScheduleResult: ...
     def on_batch_complete(...) -> list[InferenceRequest]: ...  # 本步新完成的请求
 ```
 
-后续挂 SGLang 等：实现子类并 `FrameworkFactory.register("sglang", ...)`，校准 harness 可复用。
+后续挂 SGLang 等：实现子类并 `SchedulerFactory.register("sglang", ...)`，校准 harness 可复用。
 
 ---
 
@@ -75,7 +75,7 @@ vLLM V1 单次 `schedule()` 大致是：
 3. **Phase 2**：遍历 `waiting`，prefix/远程 KV（可选）后 allocate 并准入  
 4. 产出 `SchedulerOutput`（`num_scheduled_tokens` 等）
 
-hybridsim 一一映射在 `VllmFramework.schedule_step`：
+hybridsim 一一映射在 `VllmScheduler.schedule_step`：
 
 ```text
 schedule_step
@@ -85,9 +85,9 @@ schedule_step
   └─ build_batch → ScheduleResult
 ```
 
-对应代码：[`frameworks/vllm.py`](../../../src/python/hybridsim_infer/frameworks/vllm.py) 中 `schedule_step` / `process_running_queue` / `process_wait_queue`。
+对应代码：[`schedulers/vllm_schedule.py`](../../../src/python/hybridsim_infer/schedulers/vllm_schedule.py) 中 `schedule_step` / `process_running_queue` / `process_wait_queue`。
 
-Actor 侧在 `ReplicaSchedulerActor.on_step` 调用同一套；offline 校准在 `hybridsim_schedule_driver.run_hybridsim_schedule` 调用同一套——保证「仿真步进」与「ledger 驱动」语义一致。
+Actor 侧在 `ReplicaActor.on_step` 调用同一套；offline 校准在 `hybridsim_schedule_driver.run_hybridsim_schedule` 调用同一套——保证「仿真步进」与「ledger 驱动」语义一致。
 
 ---
 
@@ -112,7 +112,7 @@ vLLM（`scheduler.py` Phase 1）：`allocate_slots` 失败则 `running.pop()`（
 hybridsim：
 
 ```python
-# VllmFramework.process_running_queue
+# VllmScheduler.process_running_queue
 while True:
     new_blocks = kv_cache_manager.allocate(request, num_new)
     if new_blocks is not None:
@@ -172,7 +172,7 @@ grow = blocks_needed_to_hold(request, need_tokens)
 
 vLLM：`schedule()` 已把 `num_computed_tokens` 推进到本步 scheduled 量；`update_from_output` 在 prompt 已覆盖时追加 1 个 sampled token（`num_tokens` 变长，computed 语义与 output 分离）。
 
-hybridsim 用 `on_batch_complete` 收拢（driver 与 `ReplicaSchedulerActor.on_batch_end` 共用）：
+hybridsim 用 `on_batch_complete` 收拢（driver 与 `ReplicaActor.on_batch_end` 共用）：
 
 1. `num_computed_tokens += scheduled_n`  
 2. 若本步刚完成 prefill 且仍有 decode 配额：`num_output_tokens += 1`，并为 finished 检测再 `computed += 1`  
@@ -209,7 +209,7 @@ APC 命中上限与 vLLM 一致：`max_cache_hit_length = prompt_len - 1`，再�
 | `max_num_scheduled_tokens` | `max_num_batched_tokens`（且 ≥ `max_num_seqs`） | 同左；driver 会抬到 ≥ `max_num_running_reqs` |
 | `max_num_running_reqs` | `max_num_seqs` | 同左 |
 | `long_prefill_token_threshold` | 同名 | 同名 |
-| `reserve_full_isl` | `scheduler_reserve_full_isl` | `VllmFramework.reserve_full_isl` |
+| `reserve_full_isl` | `scheduler_reserve_full_isl` | `VllmScheduler.reserve_full_isl` |
 | `num_gpu_blocks` / `block_size` | `KVCacheConfig` / `CacheConfig` | `VllmKvCacheManager`（`<=0` 无限 GPU） |
 | `enable_prefix_caching` | `CacheConfig.enable_prefix_caching` | framework + manager 开关 |
 | `framework` | — | `"vllm"`（工厂名） |
@@ -227,8 +227,8 @@ APC 命中上限与 vLLM 一致：`max_cache_hit_length = prompt_len - 1`，再�
 
 [`hybridsim_schedule_driver.py`](hybridsim_schedule_driver.py)：
 
-1. `FrameworkFactory.create(...)`  
-2. 循环：按 `arrive_step` 入 waiting → `framework.schedule_step` → 记 ledger → `on_batch_complete`  
+1. `SchedulerFactory.create(...)`  
+2. 循环：按 `arrive_step` 入 waiting → `scheduler.schedule_step` → 记 ledger → `on_batch_complete`  
 3. 输出 `*.hybridsim.ledger.jsonl`
 
 ### 4.3 vLLM 侧
@@ -272,11 +272,11 @@ CLI：`PYTHONPATH=src/python:tests:. python -m schedule_alignment.run_case --cas
 
 ## 5. 代码导读（建议阅读顺序）
 
-1. [`frameworks/base.py`](../../src/python/hybridsim_infer/frameworks/base.py) — 扩展点  
-2. [`frameworks/vllm.py`](../../src/python/hybridsim_infer/frameworks/vllm.py) — 对齐核心  
+1. [`schedulers/factory.py`](../../src/python/hybridsim_infer/schedulers/factory.py) — 扩展点  
+2. [`schedulers/vllm_schedule.py`](../../src/python/hybridsim_infer/schedulers/vllm_schedule.py) — 对齐核心  
 3. [`kv_system/kv_managers.py`](../../src/python/hybridsim_infer/kv_system/kv_managers.py) — null block / allocate / can_fit  
 4. [`request.py`](../../src/python/hybridsim_infer/request.py) — `num_tokens` / `num_output_tokens`  
-5. [`actors/replica_scheduler.py`](../../src/python/hybridsim_infer/actors/replica_scheduler.py) — DES 里如何调用 framework  
+5. [`actors/replica.py`](../../src/python/hybridsim_infer/actors/replica.py) — DES 里如何调用 scheduler  
 6. [`hybridsim_schedule_driver.py`](hybridsim_schedule_driver.py) + [`vllm_schedule_driver.py`](vllm_schedule_driver.py) — 双端 ledger  
 7. 对照源码：`vllm-main/vllm/v1/core/sched/scheduler.py`、`kv_cache_manager.py`（`allocate_slots` / `full_sequence_must_fit`）
 
@@ -296,9 +296,9 @@ CLI：`PYTHONPATH=src/python:tests:. python -m schedule_alignment.run_case --cas
 
 ## 7. 扩展其他框架时怎么复用
 
-1. 实现 `InferenceFramework`（`schedule_step` + `on_batch_complete`）  
-2. `FrameworkFactory.register("sglang", SgLangFramework)`  
+1. 实现 `InferenceScheduler`（`schedule_step` + `on_batch_complete`）  
+2. `SchedulerFactory.register("sglang", SgLangFramework)`  
 3. `InferenceConfig(framework="sglang")` 或 case JSON `"framework": "sglang"`  
 4. 另写 `sglang_schedule_driver`（截获该框架 schedule 输出），ledger schema 可共用  
 
-hybridsim 对齐的是**调度决策序列**，不是把 vLLM 嵌进仿真器；`VllmFramework` 是按 vLLM 语义手写的仿真模型，用真实 `Scheduler` offline 跑分做回归。
+hybridsim 对齐的是**调度决策序列**，不是把 vLLM 嵌进仿真器；`VllmScheduler` 是按 vLLM 语义手写的仿真模型，用真实 `Scheduler` offline 跑分做回归。

@@ -1,4 +1,4 @@
-"""ClusterSchedulerActor: arrival / handoff / finish; dispatch via ClusterManager."""
+"""ClusterActor: arrival / handoff / finish; dispatch via ClusterManager."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from hybridsim_infer.messages import (
 from hybridsim_infer.request import InferenceRequest
 
 
-class ClusterSchedulerActor(ActorBase):
+class ClusterActor(ActorBase):
     def __init__(
         self,
         *,

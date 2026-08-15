@@ -8,17 +8,17 @@ Native Actor-based inference on hybridsim. Corresponds to
 
 | Design | Package |
 |--------|---------|
-| ClusterSchedulerActor | `hybridsim_infer.actors.ClusterSchedulerActor` |
+| ClusterActor | `hybridsim_infer.actors.ClusterActor` |
 | ClusterManager | `hybridsim_infer.cluster`（`Monolith` / `Pd`） |
-| ReplicaSchedulerActor | `hybridsim_infer.actors.ReplicaSchedulerActor`（同构，无角色） |
+| ReplicaActor | `hybridsim_infer.actors.ReplicaActor`（同构，无角色） |
 | WorkerEngine | `hybridsim_infer.actors.WorkerEngine` |
 | KV Store / KV Client | `KvStoreActor` + `KvClient`（`enable_kv_client=True`） |
-| schedule / batch | `hybridsim_infer.frameworks`（默认 `VllmFramework`；`FrameworkFactory` 可扩展） |
+| schedule / batch | `hybridsim_infer.schedulers`（默认 `VllmScheduler`；`SchedulerFactory` 可扩展） |
 | Request arrivals | `hybridsim_infer.request_generators`（`List` / ServeGen → `schedule_arrivals`） |
 | Fake GPU duration | `hybridsim_infer.workload_generators`（`fixed` / `token_proportional` / `predict`） |
 | Request profile | `hybridsim.request_profile`（独立进程写 Chrome Trace JSON → `profile/`） |
 
-**RequestGenerator vs WorkloadGenerator**：前者生成带 `arrived_at` 的 `InferenceRequest` 序列并注入 ClusterScheduler；后者把已调度的 `ScheduleBatch` 变成 Engine TimeoutKernel。ServeGen 虽自称 workload generator，在本项目中只作为请求到达/长度采样后端。
+**RequestGenerator vs WorkloadGenerator**：前者生成带 `arrived_at` 的 `InferenceRequest` 序列并注入 ClusterActor；后者把已调度的 `ScheduleBatch` 变成 Engine TimeoutKernel。ServeGen 虽自称 workload generator，在本项目中只作为请求到达/长度采样后端。
 
 请求生成专项文档（数据来源、KV 轨迹生成、数据结构）：[`docs/request_generation.md`](../../docs/request_generation.md)。
 
@@ -116,7 +116,7 @@ PYTHONHASHSEED=0 PYTHONPATH=src/python:tests:. \
 
 `InferenceConfig(duration_mode="token_proportional")` 时 batch 时长 ∝ prefill/decode token 数。
 
-`InferenceConfig(framework="vllm")` 选择 replica 内调度实现；扩展时实现 `InferenceFramework` 子类并 `FrameworkFactory.register("sglang", …)`。
+`InferenceConfig(framework="vllm")` 选择 replica 内调度实现；扩展时实现 `InferenceScheduler` 子类并 `SchedulerFactory.register("sglang", …)`。
 
 ### PD + prefix demo 要点
 

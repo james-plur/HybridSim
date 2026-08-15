@@ -6,7 +6,7 @@ import asyncio
 import os
 from typing import Any
 
-from hybridsim_infer.frameworks import FrameworkFactory
+from hybridsim_infer.schedulers import SchedulerFactory
 from hybridsim_infer.kv_system import VllmKvCacheManager
 from hybridsim_infer.request import InferenceRequest, RequestStatus
 
@@ -68,7 +68,7 @@ def run_hybridsim_schedule(case: CaseSpec) -> list[ScheduleStepRecord]:
 
 async def _run_hybridsim_schedule_async(case: CaseSpec) -> list[ScheduleStepRecord]:
     cfg = _sched_cfg(case)
-    framework = FrameworkFactory.create(
+    framework = SchedulerFactory.create(
         cfg["framework"],
         tokens_per_step=cfg["tokens_per_step"],
         decode_tokens_per_step=cfg["decode_tokens_per_step"],

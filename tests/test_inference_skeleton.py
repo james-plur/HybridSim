@@ -8,10 +8,10 @@ import unittest
 from hybridsim_infer import (
     InferenceConfig,
     InferenceRequest,
-    VllmFramework,
+    VllmScheduler,
     build_inference_simulation,
 )
-from hybridsim_infer.frameworks import FrameworkFactory
+from hybridsim_infer.schedulers import SchedulerFactory
 from hybridsim_infer.kv_system import VllmKvCacheManager, block_keys_from_tokens
 from hybridsim_infer.messages import INFER_MESSAGE_TYPES
 from hybridsim_infer.request import RequestStatus
@@ -70,7 +70,7 @@ class TestInferenceSkeleton(unittest.TestCase):
 class TestSchedulePhases(unittest.TestCase):
     def test_phase1_before_waiting(self) -> None:
         kv = VllmKvCacheManager(num_gpu_blocks=64, block_size=8)
-        fw = VllmFramework(tokens_per_step=4, decode_tokens_per_step=1)
+        fw = VllmScheduler(tokens_per_step=4, decode_tokens_per_step=1)
         running = [
             InferenceRequest(
                 request_id=1,
@@ -107,7 +107,7 @@ class TestSchedulePhases(unittest.TestCase):
     def test_preemption_on_oom(self) -> None:
         # 2 physical blocks → 1 null reserved → 1 allocatable.
         kv = VllmKvCacheManager(num_gpu_blocks=2, block_size=16)
-        fw = VllmFramework(
+        fw = VllmScheduler(
             tokens_per_step=16,
             decode_tokens_per_step=16,
             long_prefill_token_threshold=0,
@@ -144,11 +144,11 @@ class TestSchedulePhases(unittest.TestCase):
         self.assertTrue(preempted)
         self.assertEqual(preempted[0].request_id, 2)
 
-    def test_framework_factory_vllm(self) -> None:
-        fw = FrameworkFactory.create("vllm", tokens_per_step=8)
-        self.assertIsInstance(fw, VllmFramework)
+    def test_scheduler_factory_vllm(self) -> None:
+        fw = SchedulerFactory.create("vllm", tokens_per_step=8)
+        self.assertIsInstance(fw, VllmScheduler)
         self.assertEqual(fw.name, "vllm")
-        self.assertIn("vllm", FrameworkFactory.registered())
+        self.assertIn("vllm", SchedulerFactory.registered())
 
     def test_token_proportional_predictor(self) -> None:
         from hybridsim_infer.workload_generators import TokenProportionalPredictor

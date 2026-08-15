@@ -6,7 +6,7 @@ import asyncio
 from pathlib import Path
 from typing import Any, Optional
 
-from hybridsim_infer.frameworks import FrameworkFactory
+from hybridsim_infer.schedulers import SchedulerFactory
 from hybridsim_infer.kv_system import MooncakeKvStore, VllmKvCacheManager, block_keys_from_tokens
 from hybridsim_infer.request import InferenceRequest, RequestStatus
 
@@ -78,7 +78,7 @@ async def _run_async(
 ) -> tuple[list[ScheduleStepRecord], list[MooncakePoolEvent]]:
     cfg = _sched_cfg(case)
     pool_reset()
-    framework = FrameworkFactory.create(
+    framework = SchedulerFactory.create(
         cfg["framework"],
         tokens_per_step=cfg["tokens_per_step"],
         decode_tokens_per_step=cfg["decode_tokens_per_step"],

@@ -1,6 +1,6 @@
 """KV subsystem: local cache managers, store client, and store backends.
 
-Sibling of ``frameworks/``. ``KvStoreActor`` stays under ``actors/``.
+Sibling of ``schedulers/``. ``KvStoreActor`` stays under ``actors/``.
 """
 
 from hybridsim_infer.kv_system.block_keys import (

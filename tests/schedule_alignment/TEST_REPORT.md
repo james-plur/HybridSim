@@ -39,7 +39,7 @@ HF_HUB_OFFLINE=1 VLLM_TARGET_DEVICE=cpu PYTHONHASHSEED=0 \
 | `local_prefix_hit` | 整块共享前缀 APC | 5 | PASS | PASS |
 | `local_prefix_partial` | 非整块前缀只计 full blocks | 5 | PASS | PASS |
 
-**结论**：调度输出（scheduled / preempt / finish）在 hybridsim `VllmFramework.schedule_step` 与 offline vLLM `Scheduler.schedule` 上一致。
+**结论**：调度输出（scheduled / preempt / finish）在 hybridsim `VllmScheduler.schedule_step` 与 offline vLLM `Scheduler.schedule` 上一致。
 
 ---
 

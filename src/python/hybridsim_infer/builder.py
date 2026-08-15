@@ -7,12 +7,12 @@ from typing import Any, Optional
 
 from hybridsim import Simulation, create_request_profile_session
 
-from hybridsim_infer.actors.cluster_scheduler import ClusterSchedulerActor
+from hybridsim_infer.actors.cluster import ClusterActor
 from hybridsim_infer.actors.kv_store import KvStoreActor
-from hybridsim_infer.actors.replica_scheduler import ReplicaSchedulerActor
+from hybridsim_infer.actors.replica import ReplicaActor
 from hybridsim_infer.cluster import MonolithClusterManager, PdClusterManager
 from hybridsim_infer.config import InferenceConfig
-from hybridsim_infer.frameworks import FrameworkFactory
+from hybridsim_infer.schedulers import SchedulerFactory
 from hybridsim_infer.kv_system import VllmKvCacheManager
 from hybridsim_infer.kv_system.block_keys import resolve_store_block_size
 from hybridsim_infer.messages import INFER_MESSAGE_TYPES
@@ -25,8 +25,8 @@ class InferenceSimulation:
     """Handle returned by ``build_inference_simulation``."""
 
     sim: Simulation
-    cluster: ClusterSchedulerActor
-    replicas: list[ReplicaSchedulerActor]
+    cluster: ClusterActor
+    replicas: list[ReplicaActor]
     config: InferenceConfig
     kv_store: Optional[KvStoreActor] = None
     profile: Any = field(default=None, repr=False)
@@ -112,7 +112,7 @@ def build_inference_simulation(
     sim.register_messages(list(INFER_MESSAGE_TYPES))
 
     cluster = sim.spawn_actor(
-        ClusterSchedulerActor,
+        ClusterActor,
         manager=manager,
         profile=profile if getattr(profile, "enabled", False) else None,
     )
@@ -130,7 +130,7 @@ def build_inference_simulation(
         )
 
     profile_arg = profile if getattr(profile, "enabled", False) else None
-    replicas: list[ReplicaSchedulerActor] = []
+    replicas: list[ReplicaActor] = []
     for rid in range(num_replicas):
         engine = sim.create_engine_actor()
         kv = VllmKvCacheManager(
@@ -142,7 +142,7 @@ def build_inference_simulation(
         kv_engine = (
             sim.create_engine_actor() if config.enable_kv_client else None
         )
-        framework = FrameworkFactory.create(
+        scheduler = SchedulerFactory.create(
             config.framework,
             tokens_per_step=config.tokens_per_step,
             decode_tokens_per_step=config.decode_tokens_per_step,
@@ -151,14 +151,14 @@ def build_inference_simulation(
             enable_prefix_caching=config.enable_prefix_caching,
         )
         replica = sim.spawn_actor(
-            ReplicaSchedulerActor,
+            ReplicaActor,
             replica_id=rid,
             cluster=cluster,
             engine=engine,
             kv_cache_manager=kv,
             kv_store=kv_store,
             kv_engine=kv_engine,
-            framework=framework,
+            scheduler=scheduler,
             step_interval=config.step_interval,
             dummy_exec_s=config.dummy_exec_s,
             kv_transfer_s=config.kv_transfer_s,

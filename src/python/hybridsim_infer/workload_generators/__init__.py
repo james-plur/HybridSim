@@ -1,6 +1,6 @@
 """Pluggable workload generators (ScheduleBatch → EngineActor workload).
 
-Sibling of ``frameworks/``, ``kv_system/``, and ``actors/``.
+Sibling of ``schedulers/``, ``kv_system/``, and ``actors/``.
 
 Layout:
   - generators: ``base``, ``predict_workload_generator``, ``op_workload_generator``, ``kv_transfer``
