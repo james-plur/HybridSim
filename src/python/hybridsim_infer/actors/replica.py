@@ -325,7 +325,11 @@ class ReplicaActor(ActorBase):
                         )
                 self._worker.submit(workload, result.batch)
 
-        if self._has_work():
+        # Poll at step_interval only while the worker can accept another batch
+        # (chunked prefill / max_inflight > 1, or a retry while idle). When the
+        # engine is full, leave _step_armed false so BatchEnd / KVTransferEnd /
+        # RequestMsg can _arm_step() immediately instead of spinning empty ticks.
+        if self._has_work() and self._worker.can_submit():
             self._step_armed = True
             self.send(StepMsg, delay=self._step_interval)
 

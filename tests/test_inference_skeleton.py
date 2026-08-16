@@ -13,7 +13,7 @@ from hybridsim_infer import (
 )
 from hybridsim_infer.schedulers import SchedulerFactory
 from hybridsim_infer.kv_system import VllmKvCacheManager, block_keys_from_tokens
-from hybridsim_infer.messages import INFER_MESSAGE_TYPES
+from hybridsim_infer.messages import INFER_MESSAGE_TYPES, StepMsg
 from hybridsim_infer.request import RequestStatus
 
 
@@ -58,6 +58,92 @@ class TestInferenceSkeleton(unittest.TestCase):
                 arrived_at=0.0,
                 num_prefill_tokens=4,
                 num_decode_tokens=4,
+            )
+            for i in range(1, 5)
+        ]
+        infra.schedule_arrivals(requests)
+        infra.run()
+        infra.check_errors()
+        self.assertEqual(len(infra.finished_requests), 4)
+
+    def test_engine_busy_does_not_poll_delayed_steps(self) -> None:
+        """Worker full → wait BatchEnd; do not send StepMsg every step_interval."""
+        dummy_exec_s = 0.1
+        step_interval = 1e-4
+        cfg = InferenceConfig(
+            num_replicas=1,
+            step_interval=step_interval,
+            dummy_exec_s=dummy_exec_s,
+            tokens_per_step=8,
+            decode_tokens_per_step=1,
+            max_inflight_batches=1,
+        )
+        infra = build_inference_simulation(cfg)
+        replica = infra.replicas[0]
+        orig_send = replica.send
+        delayed_steps = []
+
+        def counting_send(msg_cls, *, delay: float = 0.0, priority: int = 3, **kwargs):
+            if msg_cls is StepMsg and float(delay) > 0:
+                delayed_steps.append(float(delay))
+            return orig_send(msg_cls, delay=delay, priority=priority, **kwargs)
+
+        replica.send = counting_send  # type: ignore[method-assign]
+        req = InferenceRequest(
+            request_id=1,
+            arrived_at=0.0,
+            num_prefill_tokens=8,
+            num_decode_tokens=2,
+        )
+        infra.schedule_arrivals([req])
+        infra.run()
+        infra.check_errors()
+        self.assertEqual(len(infra.finished_requests), 1)
+        # Old loop would enqueue ~dummy_exec_s/step_interval delayed Steps per batch.
+        self.assertLess(len(delayed_steps), 20)
+
+    def test_chunked_prefill_wakes_on_batch_end(self) -> None:
+        """max_inflight=1 chunked prefill still advances after each BatchEnd."""
+        cfg = InferenceConfig(
+            num_replicas=1,
+            step_interval=1e-3,
+            dummy_exec_s=0.01,
+            tokens_per_step=8,
+            decode_tokens_per_step=1,
+            max_inflight_batches=1,
+        )
+        infra = build_inference_simulation(cfg)
+        req = InferenceRequest(
+            request_id=1,
+            arrived_at=0.0,
+            num_prefill_tokens=32,
+            num_decode_tokens=2,
+        )
+        infra.schedule_arrivals([req])
+        infra.run()
+        infra.check_errors()
+        self.assertEqual(len(infra.finished_requests), 1)
+        self.assertTrue(infra.finished_requests[0].completed)
+
+    def test_pipelined_inflight_still_completes(self) -> None:
+        """Spare engine slots still use delayed Step to fill max_inflight > 1."""
+        cfg = InferenceConfig(
+            num_replicas=1,
+            step_interval=1e-3,
+            dummy_exec_s=0.01,
+            tokens_per_step=8,
+            decode_tokens_per_step=1,
+            max_inflight_batches=2,
+            max_num_running_reqs=8,
+            max_num_scheduled_tokens=64,
+        )
+        infra = build_inference_simulation(cfg)
+        requests = [
+            InferenceRequest(
+                request_id=i,
+                arrived_at=0.0,
+                num_prefill_tokens=8,
+                num_decode_tokens=2,
             )
             for i in range(1, 5)
         ]

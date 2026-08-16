@@ -252,12 +252,9 @@ class VllmKvCacheManager(KvCacheManager):
         if block.block_id in self._free_queue:
             return
         if block.block_hash is None:
-            # Evict first: prepend unhashed.
-            items = list(self._free_queue.items())
-            self._free_queue.clear()
+            # Evict first: O(1) prepend (insert, then move to front).
             self._free_queue[block.block_id] = block
-            for k, v in items:
-                self._free_queue[k] = v
+            self._free_queue.move_to_end(block.block_id, last=False)
         else:
             self._free_queue[block.block_id] = block
         if not self._unlimited:

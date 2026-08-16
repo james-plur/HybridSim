@@ -364,5 +364,85 @@ class StoreNBlockSizeTests(unittest.TestCase):
         )
 
 
+class FreeQueueEvictOrderTests(unittest.TestCase):
+    def setUp(self) -> None:
+        reset_none_hash()
+
+    def test_unhashed_prepended_ahead_of_hashed(self) -> None:
+        """Unhashed pages are evicted first; hashed APC pages stay at the tail."""
+        kv = VllmKvCacheManager(
+            num_gpu_blocks=8, block_size=16, enable_prefix_caching=True
+        )
+        r1 = InferenceRequest(
+            request_id=1,
+            num_prefill_tokens=16,
+            num_decode_tokens=1,
+            prompt_token_ids=list(range(16)),
+        )
+        self.assertIsNotNone(kv.allocate(r1, 16))
+        hashed = kv.allocated[1][0]
+        hash_key = hashed.block_hash
+        hashed_id = hashed.block_id
+        self.assertIsNotNone(hash_key)
+        kv.free(r1)
+        self.assertIn(hash_key, kv._hash_to_block)
+
+        r2 = InferenceRequest(
+            request_id=2,
+            num_prefill_tokens=8,
+            num_decode_tokens=1,
+            prompt_token_ids=list(range(8)),
+        )
+        self.assertIsNotNone(kv.allocate(r2, 8))
+        unhashed = kv.allocated[2][0]
+        self.assertIsNone(unhashed.block_hash)
+        unhashed_id = unhashed.block_id
+        kv.free(r2)
+
+        front_id, front = next(iter(kv._free_queue.items()))
+        self.assertEqual(front_id, unhashed_id)
+        self.assertIsNone(front.block_hash)
+
+        r3 = InferenceRequest(
+            request_id=3,
+            num_prefill_tokens=16,
+            num_decode_tokens=1,
+            prompt_token_ids=list(range(100, 116)),
+        )
+        self.assertIsNotNone(kv.allocate(r3, 16))
+        self.assertEqual(kv.allocated[3][0].block_id, unhashed_id)
+        self.assertIn(hash_key, kv._hash_to_block)
+        self.assertEqual(kv._hash_to_block[hash_key].block_id, hashed_id)
+
+    def test_later_unhashed_evicted_before_earlier(self) -> None:
+        kv = VllmKvCacheManager(
+            num_gpu_blocks=8, block_size=16, enable_prefix_caching=False
+        )
+        r1 = InferenceRequest(
+            request_id=1,
+            num_prefill_tokens=16,
+            prompt_token_ids=list(range(16)),
+        )
+        r2 = InferenceRequest(
+            request_id=2,
+            num_prefill_tokens=16,
+            prompt_token_ids=list(range(16, 32)),
+        )
+        self.assertIsNotNone(kv.allocate(r1, 16))
+        self.assertIsNotNone(kv.allocate(r2, 16))
+        id1 = kv.allocated[1][0].block_id
+        id2 = kv.allocated[2][0].block_id
+        kv.free(r1)
+        kv.free(r2)
+        front_id, _ = next(iter(kv._free_queue.items()))
+        self.assertEqual(front_id, id2)
+        evicted = kv._evict_one_free()
+        self.assertIsNotNone(evicted)
+        self.assertEqual(evicted.block_id, id2)
+        evicted2 = kv._evict_one_free()
+        self.assertIsNotNone(evicted2)
+        self.assertEqual(evicted2.block_id, id1)
+
+
 if __name__ == "__main__":
     unittest.main()
