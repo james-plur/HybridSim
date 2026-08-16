@@ -150,10 +150,9 @@ class ReplicaActor(ActorBase):
                 profile=self._profile,
                 replica_id=self.replica_id,
             )
-            if hasattr(self._kv, "enable_prefix_caching"):
-                self._kv.enable_prefix_caching = bool(
-                    getattr(self._scheduler, "enable_prefix_caching", False)
-                )
+            self._kv.enable_prefix_caching = bool(
+                self._scheduler.enable_prefix_caching
+            )
             self._kv.attach_client(
                 client,
                 kv_lookup_async=bool(kv_lookup_async),
@@ -210,14 +209,8 @@ class ReplicaActor(ActorBase):
         req.kv_transfer_params = params
         req.completed = False
         # Prefill completes before decode tokens: still publish local prefix for reuse.
-        if getattr(self._scheduler, "enable_prefix_caching", False):
-            cache_req = getattr(self._kv, "cache_request_prefix", None)
-            if callable(cache_req):
-                cache_req(req)
-            else:
-                prefix = list(req.prompt_token_ids[: req.num_prefill_tokens])
-                if prefix:
-                    self._kv.cache_prefix(prefix)
+        if self._scheduler.enable_prefix_caching:
+            self._kv.cache_request_prefix(req)
         self._kv.free(req)
         transfer_id = str(params.get("transfer_id", ""))
         self._cluster.send(

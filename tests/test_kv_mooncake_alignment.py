@@ -131,6 +131,34 @@ class BlockPoolApcTests(unittest.TestCase):
         kv.free(r2)
         self.assertEqual(kv.free_blocks, usable)
 
+    def test_cache_prefix_seeds_hash_table(self) -> None:
+        kv = VllmKvCacheManager(
+            num_gpu_blocks=16, block_size=16, enable_prefix_caching=True
+        )
+        prompt = list(range(32))
+        kv.cache_prefix(prompt)
+        r = InferenceRequest(
+            request_id=1,
+            num_prefill_tokens=32,
+            num_decode_tokens=1,
+            prompt_token_ids=list(prompt),
+        )
+        self.assertEqual(kv.match(r), 16)
+        self.assertTrue(kv._hash_to_block)
+        self.assertEqual(kv.allocated, {})
+
+    def test_cache_prefix_noop_without_apc(self) -> None:
+        kv = VllmKvCacheManager(num_gpu_blocks=16, block_size=16)
+        kv.cache_prefix(list(range(32)))
+        r = InferenceRequest(
+            request_id=1,
+            num_prefill_tokens=32,
+            num_decode_tokens=1,
+            prompt_token_ids=list(range(32)),
+        )
+        self.assertEqual(kv.match(r), 0)
+        self.assertFalse(kv._hash_to_block)
+
     def test_mid_flight_visibility(self) -> None:
         kv = VllmKvCacheManager(
             num_gpu_blocks=32, block_size=16, enable_prefix_caching=True

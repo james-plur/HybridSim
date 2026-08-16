@@ -19,6 +19,7 @@ class InferenceScheduler(ABC):
     """Replica-local schedule + batch-completion policy for one serving stack."""
 
     name: str = "base"
+    enable_prefix_caching: bool = False
 
     @abstractmethod
     async def schedule_step(

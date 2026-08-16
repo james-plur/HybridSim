@@ -39,6 +39,7 @@ class KvCacheManager(ABC):
     num_gpu_blocks: int
     free_blocks: int
     allocated: dict[int, list[KvBlock]]
+    enable_prefix_caching: bool = False
 
     @abstractmethod
     def match(self, request: Any) -> int:
@@ -46,20 +47,11 @@ class KvCacheManager(ABC):
 
     @abstractmethod
     def cache_prefix(self, token_ids: list[int]) -> None:
-        ...
+        """Seed APC from a token list (allocate, bind hashes, free pages)."""
 
+    @abstractmethod
     def cache_request_prefix(self, request: Any) -> None:
-        """Cache completed prompt prefix for a request (hash_ids or tokens)."""
-        tokens = list(getattr(request, "prompt_token_ids", None) or [])
-        n = int(
-            getattr(request, "num_computed_tokens", 0)
-            or getattr(request, "num_prefill_tokens", 0)
-            or 0
-        )
-        if n > 0 and tokens:
-            self.cache_prefix(tokens[:n] if n < len(tokens) else tokens)
-        elif tokens:
-            self.cache_prefix(tokens)
+        """Publish a request's computed prefix into APC."""
 
     @abstractmethod
     def blocks_for_tokens(self, num_tokens: int) -> int:
@@ -131,11 +123,11 @@ class KvCacheManager(ABC):
     ) -> None:
         return None
 
+    @abstractmethod
     def attach_cached_prefix(
         self, request: Any, num_tokens: int
     ) -> Optional[list[KvBlock]]:
-        """Attach locally cached APC blocks for ``num_tokens`` (default: unsupported)."""
-        return None
+        """Reuse APC blocks for a block-aligned local hit."""
 
 
 @dataclass
@@ -168,8 +160,7 @@ class VllmKvCacheManager(KvCacheManager):
     )
     _next_block_id: int = field(default=0, init=False)
     _num_saved_tokens: dict[int, int] = field(default_factory=dict, init=False)
-    #: Legacy list-of-chains for tests that only call cache_prefix without blocks.
-    _prefix_hash_chains: list[list[str]] = field(default_factory=list, init=False)
+    _prefix_seed_id: int = field(default=0, init=False)
 
     def __post_init__(self) -> None:
         self.store_block_size = resolve_store_block_size(
@@ -312,9 +303,8 @@ class VllmKvCacheManager(KvCacheManager):
 
     def match(self, request: Any) -> int:
         """Longest contiguous cached prefix in tokens (APC block-hash table)."""
-        if not self.enable_prefix_caching and not self._hash_to_block:
-            # Still allow chain-list fallback when tests call cache_prefix only.
-            pass
+        if not self.enable_prefix_caching:
+            return 0
         bs = self._request_block_size(request)
         input_len = int(getattr(request, "num_prefill_tokens", 0) or 0)
         tokens = list(getattr(request, "prompt_token_ids", None) or [])
@@ -324,25 +314,13 @@ class VllmKvCacheManager(KvCacheManager):
         if not keys or bs <= 0 or input_len <= 0:
             return 0
 
-        best_blocks = 0
-        # Primary: hash → block map (BlockPool APC).
         n = 0
         for key in keys:
             if key not in self._hash_to_block:
                 break
             n += 1
-        best_blocks = n
 
-        # Legacy chain list (cache_prefix without physical blocks).
-        for cached in self._prefix_hash_chains:
-            m = 0
-            lim = min(len(cached), len(keys))
-            while m < lim and cached[m] == keys[m]:
-                m += 1
-            if m > best_blocks:
-                best_blocks = m
-
-        hit = prefix_hit_tokens(best_blocks, input_len, bs)
+        hit = prefix_hit_tokens(n, input_len, bs)
         max_hit = max(0, input_len - 1)
         hit = min(hit, max_hit)
         return (hit // bs) * bs
@@ -368,35 +346,28 @@ class VllmKvCacheManager(KvCacheManager):
             key = keys[i]
             block = self._hash_to_block.get(key)
             if block is None:
-                # Legacy hash-chain hit without physical pages: allocate fresh.
-                fresh = self._alloc_fresh_blocks(need - len(have) - len(attached))
-                if fresh is None:
-                    for b in attached:
-                        self._return_block_to_free(b)
-                    return None
-                attached.extend(fresh)
-                break
+                for b in attached:
+                    self._return_block_to_free(b)
+                return None
             self._touch_block(block)
             attached.append(block)
         self.allocated.setdefault(rid, []).extend(attached)
         return attached
 
     def cache_prefix(self, token_ids: list[int]) -> None:
-        """Legacy helper: record hash chain (and bind to blocks if allocated)."""
-        if not token_ids:
+        """Seed APC from a token list: allocate, hash-bind, then free the pages."""
+        tokens = list(token_ids)
+        if not tokens or not self.enable_prefix_caching:
             return
-        keys = resolve_block_keys(
-            token_ids=list(token_ids),
-            block_size=self.block_size,
-            num_tokens=len(token_ids),
-            input_length=len(token_ids),
+        self._prefix_seed_id -= 1
+        req = InferenceRequest(
+            request_id=self._prefix_seed_id,
+            num_prefill_tokens=len(tokens),
+            prompt_token_ids=tokens,
         )
-        if not keys:
+        if self.allocate(req, len(tokens)) is None:
             return
-        for cached in self._prefix_hash_chains:
-            if cached == keys:
-                return
-        self._prefix_hash_chains.append(keys)
+        self.free(req)
 
     def cache_request_prefix(self, request: Any) -> None:
         n = int(
@@ -415,8 +386,6 @@ class VllmKvCacheManager(KvCacheManager):
         keys = self._prefix_keys_for_request(
             request, num_tokens=n_full * bs if n_full > 0 else int(num_tokens) or None
         )
-        if keys and keys not in self._prefix_hash_chains:
-            self._prefix_hash_chains.append(keys)
         if not self.enable_prefix_caching or n_full <= 0 or not blocks:
             return
         for i in range(min(n_full, len(blocks), len(keys))):

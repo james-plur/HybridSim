@@ -87,11 +87,9 @@ class TestAnalyticalE2E(unittest.TestCase):
             max_num_scheduled_tokens=64,
         )
         infra = build_inference_simulation(cfg)
-        # Seed local APC via manager if available.
         kv = infra.replicas[0]._kv
         prompt = list(range(16))
-        if hasattr(kv, "cache_prefix"):
-            kv.cache_prefix(prompt)
+        kv.cache_prefix(prompt)
 
         r1 = InferenceRequest(
             request_id=1,

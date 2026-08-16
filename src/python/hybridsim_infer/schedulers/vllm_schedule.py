@@ -205,12 +205,7 @@ class VllmScheduler(InferenceScheduler):
             if self.enable_prefix_caching:
                 local_hit = kv_cache_manager.match(request)
                 if local_hit > request.num_computed_tokens:
-                    attach = getattr(kv_cache_manager, "attach_cached_prefix", None)
-                    if callable(attach):
-                        blocks = attach(request, local_hit)
-                    else:
-                        gain = local_hit - request.num_computed_tokens
-                        blocks = kv_cache_manager.allocate(request, gain)
+                    blocks = kv_cache_manager.attach_cached_prefix(request, local_hit)
                     if blocks is None:
                         still_waiting.append(request)
                         still_waiting.extend(queue[i + 1 :])
@@ -262,11 +257,7 @@ class VllmScheduler(InferenceScheduler):
                 request.status = RequestStatus.FINISHED
                 request.completed = True
                 if self.enable_prefix_caching:
-                    cache_req = getattr(kv_cache_manager, "cache_request_prefix", None)
-                    if callable(cache_req):
-                        cache_req(request)
-                    else:
-                        kv_cache_manager.cache_prefix(list(request.prompt_token_ids))
+                    kv_cache_manager.cache_request_prefix(request)
                 kv_cache_manager.free(request)
                 finished_cached.append(request)
                 continue
@@ -280,21 +271,10 @@ class VllmScheduler(InferenceScheduler):
                 full_tokens = int(
                     getattr(request, "num_tokens", request.num_prefill_tokens)
                 )
-                can_fit = getattr(kv_cache_manager, "can_fit", None)
-                if callable(can_fit):
-                    if not can_fit(request, full_tokens):
-                        still_waiting.append(request)
-                        still_waiting.extend(queue[i + 1 :])
-                        break
-                else:
-                    need = kv_cache_manager.blocks_for_tokens(full_tokens)
-                    have = len(
-                        kv_cache_manager.allocated.get(request.request_id, [])
-                    )
-                    if need - have > kv_cache_manager.free_blocks:
-                        still_waiting.append(request)
-                        still_waiting.extend(queue[i + 1 :])
-                        break
+                if not kv_cache_manager.can_fit(request, full_tokens):
+                    still_waiting.append(request)
+                    still_waiting.extend(queue[i + 1 :])
+                    break
 
             new_blocks = kv_cache_manager.allocate(request, num_new)
             if new_blocks is None:
@@ -471,11 +451,7 @@ class VllmScheduler(InferenceScheduler):
                 req.status = RequestStatus.FINISHED
                 req.completed = True
                 if self.enable_prefix_caching:
-                    cache_req = getattr(kv_cache_manager, "cache_request_prefix", None)
-                    if callable(cache_req):
-                        cache_req(req)
-                    else:
-                        kv_cache_manager.cache_prefix(list(req.prompt_token_ids))
+                    kv_cache_manager.cache_request_prefix(req)
                 kv_cache_manager.free(req)
                 finished.append(req)
         return finished

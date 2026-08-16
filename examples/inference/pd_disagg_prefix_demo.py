@@ -128,9 +128,7 @@ def main() -> None:
 
     # Prefill-side local prefix entries should retain shared prompts.
     prefill_kv = infra.replicas[0]._kv
-    n_prefixes = len(getattr(prefill_kv, "_prefix_hash_chains", None) or [])
-    if n_prefixes < 1:
-        n_prefixes = len(getattr(prefill_kv, "_prefix_entries", []) or [])
+    n_prefixes = len(prefill_kv._hash_to_block)
     print(f"prefill replica local prefix entries={n_prefixes}")
     if n_prefixes < 1:
         raise SystemExit("expected Prefill replica to cache at least one prefix")

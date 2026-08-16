@@ -61,8 +61,10 @@ class ResolveBlockKeysTests(unittest.TestCase):
 
 
 class LocalApcHashIdsTests(unittest.TestCase):
-    def test_match_and_cache_on_hash_chain(self) -> None:
-        kv = VllmKvCacheManager(num_gpu_blocks=64, block_size=16)
+    def test_match_and_cache_on_hash_ids(self) -> None:
+        kv = VllmKvCacheManager(
+            num_gpu_blocks=64, block_size=16, enable_prefix_caching=True
+        )
         r1 = InferenceRequest(
             request_id=1,
             num_prefill_tokens=40,
@@ -72,8 +74,9 @@ class LocalApcHashIdsTests(unittest.TestCase):
             block_size=16,
         )
         self.assertEqual(kv.match(r1), 0)
-        r1.num_computed_tokens = 40
+        self.assertIsNotNone(kv.allocate(r1, 40))
         kv.cache_request_prefix(r1)
+        kv.free(r1)
 
         r2 = InferenceRequest(
             request_id=2,
