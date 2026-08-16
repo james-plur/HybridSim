@@ -19,6 +19,8 @@ src/python/hybridsim_infer/request_generators/kvcache_traces/normalized/
 !tests/schedule_alignment/cases/*.json
 !tests/schedule_alignment/dummy_hf_model/**/*.json
 
+examples/inference/results/
+
 # Generated run_case ledgers (regenerate locally; keep *.expected.ledger.jsonl goldens)
 tests/schedule_alignment/cases/*.hybridsim.ledger.jsonl
 tests/schedule_alignment/cases/*.vllm.ledger.jsonl

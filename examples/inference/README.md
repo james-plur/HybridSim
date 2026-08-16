@@ -70,7 +70,7 @@ PD 配置：`num_prefill_replicas` / `num_decode_replicas`（总副本 = 二者�
 | Save（若启用 Store） | BatchEnd → `save` → `submit_push`（PD Prefill 与 Monolith 均可） |
 | Prefill handoff + prefix | handoff 前 `cache_prefix`，同 prompt 后续请求可在 P 池本地命中 |
 
-配置：`cluster_type`、`enable_kv_client`、`kv_lookup_async`、`kv_lookup_rtt_s`、`kv_bandwidth_gbps`、`kv_bytes_per_token`、`kv_transfer_s`。
+配置：`cluster_type`、`enable_kv_client`、`model_preset`（KV 体积从 preset YAML 计算）、`kv_lookup_async`、`kv_lookup_rtt_s`、`kv_bandwidth_gbps`、`kv_transfer_s`。
 
 **Store 正交于拓扑**：PD / Monolith 均可 `enable_kv_client=True` 挂共享 Store。
 

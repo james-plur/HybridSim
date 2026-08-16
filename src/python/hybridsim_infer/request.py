@@ -41,6 +41,10 @@ class InferenceRequest:
     pending_lookup: bool = False
     #: Cached async lookup result; consumed by the next ``remote_lookup``.
     lookup_result: Optional[dict] = None
+    #: DES time when the request finished (set by ClusterActor).
+    finished_at: Optional[float] = None
+    #: Longest local-APC ∪ remote-Store prefix applied (tokens).
+    prefix_hit_tokens: int = 0
 
     def __post_init__(self) -> None:
         # hash_ids traces already carry block identity; skip unique fake prompts
@@ -69,6 +73,12 @@ class InferenceRequest:
 
     def is_finished(self) -> bool:
         return self.num_computed_tokens >= self.num_tokens_with_output
+
+    def record_prefix_hit(self, n: int) -> None:
+        """Keep the longest prefix-cache hit observed for this request."""
+        hit = max(0, int(n))
+        if hit > self.prefix_hit_tokens:
+            self.prefix_hit_tokens = hit
 
     @property
     def is_prefill_chunk(self) -> bool:

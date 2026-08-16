@@ -18,6 +18,7 @@ from hybridsim_infer.workload_generators.analytic_model.configs import (
 )
 from hybridsim_infer.workload_generators.analytic_model.kv_cache import (
     bytes_per_token as model_bytes_per_token,
+    resolve_model,
 )
 from hybridsim_infer.workload_generators.kv_transfer import (
     KvTransferWorkloadGenerator,
@@ -51,7 +52,7 @@ class KvClient:
         lookup_rtt_s: float = 1e-3,
         on_transfer_complete: Callable[[int, int, str], None],
         workload_generator: Optional[KvTransferWorkloadGenerator] = None,
-        model_config: Optional[ModelConfig] = None,
+        model_config: Optional[ModelConfig | str] = None,
         network_config: Optional[NetworkConfig] = None,
         profile: Any = None,
         replica_id: int = 0,
@@ -71,6 +72,8 @@ class KvClient:
         self.transfer_s_floor = float(transfer_s_floor)
         self.kv_latency_s = float(kv_latency_s)
         self.lookup_rtt_s = float(lookup_rtt_s)
+        if model_config is not None:
+            model_config = resolve_model(model_config)
         self.model_config = model_config
         self.network_config = network_config
         self._on_transfer_complete = on_transfer_complete

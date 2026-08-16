@@ -11,6 +11,7 @@ from hybridsim_infer.workload_generators.analytic_model.configs import (
 from hybridsim_infer.workload_generators.analytic_model.kv_cache import (
     bytes_per_token,
     cache_bytes,
+    resolve_model,
 )
 
 TransferDirection = Literal["pull", "push"]
@@ -19,7 +20,7 @@ TransferDirection = Literal["pull", "push"]
 def transfer_duration_s(
     *,
     num_tokens: int,
-    model: Optional[ModelConfig] = None,
+    model: Optional[ModelConfig | str] = None,
     bytes_per_token_fallback: float = 16.0,
     network: Optional[NetworkConfig] = None,
     bandwidth_gbps: float = 50.0,
@@ -28,11 +29,12 @@ def transfer_duration_s(
 ) -> float:
     """α-β transfer time: ``latency + bytes / bandwidth``.
 
-    When ``model`` is set, bytes come from :func:`cache_bytes`; otherwise
-    ``num_tokens * bytes_per_token_fallback``.
+    When ``model`` is a ``ModelConfig`` or preset id, bytes come from
+    :func:`cache_bytes`; otherwise ``num_tokens * bytes_per_token_fallback``.
     """
     tokens = max(0, int(num_tokens))
     if model is not None:
+        model = resolve_model(model)
         nbytes = cache_bytes(model, tokens)
     else:
         nbytes = float(tokens) * float(bytes_per_token_fallback)
@@ -57,7 +59,7 @@ class KvTransferWorkloadGenerator:
     def __init__(
         self,
         *,
-        model: Optional[ModelConfig] = None,
+        model: Optional[ModelConfig | str] = None,
         network: Optional[NetworkConfig] = None,
         bytes_per_token: float = 16.0,
         bandwidth_gbps: float = 50.0,
@@ -65,7 +67,7 @@ class KvTransferWorkloadGenerator:
         transfer_s_floor: float = 0.0,
         page_tokens: int = 0,
     ) -> None:
-        self.model = model
+        self.model = resolve_model(model) if model is not None else None
         self.network = network
         self.bytes_per_token = float(bytes_per_token)
         self.bandwidth_gbps = float(bandwidth_gbps)

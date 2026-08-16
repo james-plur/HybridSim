@@ -19,6 +19,7 @@ from hybridsim_infer.workload_generators.analytic_model.dag_profile import (
 from hybridsim_infer.workload_generators.analytic_model.kv_cache import (
     bytes_per_token,
     cache_bytes,
+    resolve_model,
 )
 from hybridsim_infer.workload_generators.analytic_model.model_presets import (
     list_presets,
@@ -71,6 +72,7 @@ __all__ = [
     "load_model_config",
     "load_preset",
     "profile_schedule_batch",
+    "resolve_model",
     "strip_layer_prefix",
     "total_kernel_duration_s",
     "write_chrome_trace",

@@ -111,6 +111,10 @@ class TestAnalyticalE2E(unittest.TestCase):
         infra.run()
         infra.check_errors()
         self.assertEqual(len(infra.finished_requests), 2)
+        by_id = {r.request_id: r for r in infra.finished_requests}
+        self.assertIsNotNone(by_id[1].finished_at)
+        self.assertGreaterEqual(float(by_id[1].finished_at), 0.0)
+        self.assertGreater(by_id[2].prefix_hit_tokens, 0)
 
 
 if __name__ == "__main__":

@@ -43,7 +43,7 @@ class ReplicaActor(ActorBase):
         dummy_exec_s: float = 0.05,
         kv_transfer_s: float = 1e-4,
         kv_bandwidth_gbps: float = 50.0,
-        kv_bytes_per_token: float = 16.0,
+        kv_bytes_per_token: float | None = None,
         kv_latency_s: float = 0.0,
         kv_lookup_async: bool = False,
         kv_lookup_rtt_s: float = 1e-3,
@@ -138,7 +138,9 @@ class ReplicaActor(ActorBase):
                 block_size=self._kv.block_size,
                 store_block_size=getattr(self._kv, "store_block_size", None),
                 bandwidth_gbps=kv_bandwidth_gbps,
-                bytes_per_token=kv_bytes_per_token,
+                bytes_per_token=(
+                    float(kv_bytes_per_token) if kv_bytes_per_token is not None else 16.0
+                ),
                 transfer_s_floor=kv_transfer_s,
                 kv_latency_s=kv_latency_s,
                 lookup_rtt_s=kv_lookup_rtt_s,

@@ -87,13 +87,16 @@ class ClusterActor(ActorBase):
 
     @on(RequestFinishMsg)
     def on_request_finish(self, _actor, msg: RequestFinishMsg) -> None:
-        self.finished_requests.append(msg.request)
+        req = msg.request
+        req.finished_at = float(self.sim.now())
+        self.finished_requests.append(req)
         if self._profile is not None:
             self._profile.emit_request_meta(
-                request=msg.request,
+                request=req,
                 extra={
-                    "finished_at": float(self.sim.now()),
+                    "finished_at": float(req.finished_at),
                     "finish_replica_id": int(msg.replica_id),
+                    "prefix_hit_tokens": int(req.prefix_hit_tokens),
                 },
             )
         self._mgr.on_finish(int(msg.replica_id))

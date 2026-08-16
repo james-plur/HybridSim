@@ -217,6 +217,7 @@ class VllmScheduler(InferenceScheduler):
                         break
                     request.num_computed_tokens = local_hit
                     prefix_hits[request.request_id] = int(local_hit)
+                    request.record_prefix_hit(local_hit)
 
             if (
                 remote_lookup is not None
@@ -230,6 +231,9 @@ class VllmScheduler(InferenceScheduler):
                     still_waiting.append(request)
                     continue
                 hit_n = int(lookup.get("num_tokens", 0)) if lookup.get("hit") else 0
+                request.record_prefix_hit(
+                    max(int(request.num_computed_tokens), hit_n)
+                )
                 if hit_n > request.num_computed_tokens:
                     gain = hit_n - request.num_computed_tokens
                     blocks = kv_cache_manager.allocate(request, gain)

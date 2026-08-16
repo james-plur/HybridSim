@@ -1,4 +1,9 @@
-"""KV cache byte formulas aligned with elinx/llm-mem-calculator ``calc.js``."""
+"""KV cache byte formulas aligned with elinx/llm-mem-calculator ``calc.js``.
+
+Callers pass a ``ModelConfig`` or a ``model_presets`` id (e.g. ``llama-3.1-8b``).
+Shape fields (layers, heads, MLA ranks, indexer, compress ratios) come from the
+preset YAML — users only pick the model kind.
+"""
 
 from __future__ import annotations
 
@@ -9,8 +14,22 @@ KV_FORMULA_MLA = "mla"
 KV_FORMULA_DSA_MLA = "dsa_mla"
 KV_FORMULA_V4_HYBRID = "deepseek_v4_hybrid"
 
+ModelRef = ModelConfig | str
 
-def resolved_kv_formula(model: ModelConfig) -> str:
+
+def resolve_model(model: ModelRef) -> ModelConfig:
+    """Return ``ModelConfig``; load from :func:`load_preset` when given an id."""
+    if isinstance(model, str):
+        from hybridsim_infer.workload_generators.analytic_model.model_presets import (
+            load_preset,
+        )
+
+        return load_preset(model)
+    return model
+
+
+def resolved_kv_formula(model: ModelRef) -> str:
+    model = resolve_model(model)
     raw = (getattr(model, "kv_formula", None) or "").strip().lower()
     if raw:
         return raw
@@ -51,12 +70,16 @@ def _num_indexer_layers(model: ModelConfig) -> int:
 
 
 def cache_bytes(
-    model: ModelConfig,
+    model: ModelRef,
     num_tokens: int,
     *,
     include_draft: bool | None = None,
 ) -> float:
-    """Total KV (+ indexer) bytes for ``num_tokens`` tokens (one sequence)."""
+    """Total KV (+ indexer) bytes for ``num_tokens`` tokens (one sequence).
+
+    ``model`` is a ``ModelConfig`` or a preset id such as ``llama-3.1-8b``.
+    """
+    model = resolve_model(model)
     tokens = max(0, int(num_tokens))
     formula = resolved_kv_formula(model)
     prec = _prec_b(model)
@@ -137,7 +160,7 @@ def cache_bytes(
 
 
 def bytes_per_token(
-    model: ModelConfig,
+    model: ModelRef,
     *,
     num_tokens: int = 1,
     include_draft: bool | None = None,

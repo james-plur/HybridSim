@@ -87,6 +87,14 @@ class TestKvCacheBytes(unittest.TestCase):
         self.assertEqual(cache_bytes(m, self.T), float(expected))
         self.assertEqual(bytes_per_token(m, num_tokens=1), float(2 * 8 * 128 * self.P * 32))
 
+    def test_preset_id_matches_loaded_config(self) -> None:
+        m = load_preset("llama-3.1-8b")
+        self.assertEqual(cache_bytes("llama-3.1-8b", self.T), cache_bytes(m, self.T))
+        self.assertEqual(
+            bytes_per_token("deepseek-v3", num_tokens=1),
+            bytes_per_token(load_preset("deepseek-v3"), num_tokens=1),
+        )
+
     def test_deepseek_v3_mla(self) -> None:
         m = load_preset("deepseek-v3")
         # L × (kv_lora + rope) × T × p
@@ -112,6 +120,14 @@ class TestKvCacheBytes(unittest.TestCase):
         kv = 78 * (512 + 64) * self.T * self.P
         idx = n_idx * 128 * self.T * self.P
         self.assertEqual(cache_bytes(m, self.T), float(kv + idx))
+
+    def test_deepseek_v32_dsa_mla_bytes_per_token(self) -> None:
+        m = load_preset("deepseek-v3.2")
+        expected = 61 * (512 + 64) * 2 + 61 * 128 * 2
+        self.assertEqual(expected, 85888)
+        self.assertEqual(bytes_per_token(m, num_tokens=1), float(expected))
+        self.assertEqual(cache_bytes(m, 16), float(expected * 16))
+        self.assertFalse(m.include_draft_kv)
 
 
 class TestDsaDag(unittest.TestCase):
@@ -233,6 +249,24 @@ class TestKvTransfer(unittest.TestCase):
         self.assertAlmostEqual(client.transfer_duration_s(tokens), expected, places=12)
         # Model-derived bytes/token differs from the 16-byte fallback.
         self.assertNotEqual(client.bytes_per_token, 16.0)
+
+    def test_kv_client_accepts_preset_id(self) -> None:
+        engine = MagicMock()
+        owner = MagicMock()
+        owner.sim.now.return_value = 0.0
+        client = KvClient(
+            owner,
+            store=None,
+            engine=engine,
+            model_config="llama-3.1-8b",
+            on_transfer_complete=lambda *a: None,
+        )
+        model = load_preset("llama-3.1-8b")
+        self.assertAlmostEqual(
+            client.transfer_duration_s(128),
+            transfer_duration_s(num_tokens=128, model=model),
+            places=12,
+        )
 
 
 if __name__ == "__main__":

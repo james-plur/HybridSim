@@ -40,8 +40,9 @@ class InferenceConfig(SimulationConfig):
     analytical_config: object | None = None
     #: Model preset id (e.g. ``llama-3.1-8b`` / ``deepseek-v3``). Shared across all
     #: ``duration_mode`` values: injects ``ModelConfig`` into analytical DAG and KV
-    #: transfer. For ``predict``, RF timing still comes from ``frontier_predictor``;
-    #: preset and RF should describe the same model family.
+    #: transfer volume (``kv_cache`` formulas). For ``predict``, RF timing still
+    #: comes from ``frontier_predictor``; preset and RF should describe the same
+    #: model family.
     model_preset: str | None = None
     #: Cap on tokens scheduled for one request's prefill chunk in a step.
     tokens_per_step: int = 8
@@ -70,8 +71,9 @@ class InferenceConfig(SimulationConfig):
     kv_transfer_s: float = 1e-4
     #: Simulated interconnect bandwidth for KV pull/push duration.
     kv_bandwidth_gbps: float = 50.0
-    #: Bytes per token used when estimating transfer time (fallback without model).
-    kv_bytes_per_token: float = 16.0
+    #: KV transfer bytes/token **fallback** when ``model_preset`` is unset.
+    #: Prefer ``model_preset``; volume then comes from preset YAML via ``kv_cache``.
+    kv_bytes_per_token: float | None = None
     #: Fixed latency α (seconds) for KV transfer α-β model.
     kv_latency_s: float = 0.0
     #: Remote KV store DRAM capacity in blocks (``<=0`` → unlimited).
