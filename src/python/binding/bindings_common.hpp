@@ -109,28 +109,32 @@ MessageType register_message(py::object spec);
 void actor_on(const std::shared_ptr<PythonActor> &self,
               const MessageType &msg_type, py::function handler);
 
-void actor_send_object(PythonActor &self, py::object obj, double delay = 0.0);
+void actor_send_object(PythonActor &self, py::object obj, double delay = 0.0,
+                       int priority = 3);
 
 void actor_send_type(PythonActor &self, const MessageType &msg_type,
-                     py::kwargs kwargs, double delay = 0.0);
+                     py::kwargs kwargs, double delay = 0.0, int priority = 3);
 
-void actor_send_at_object(PythonActor &self, double when, py::object obj);
+void actor_send_at_object(PythonActor &self, double when, py::object obj,
+                          int priority = 3);
 
 void actor_send_at_type(PythonActor &self, double when,
-                        const MessageType &msg_type, py::kwargs kwargs);
+                        const MessageType &msg_type, py::kwargs kwargs,
+                        int priority = 3);
 
 ReplyFuture actor_request_object(PythonActor &self, py::object obj,
-                                 double delay = 0.0);
+                                 double delay = 0.0, int priority = 3);
 
 ReplyFuture actor_request_type(PythonActor &self, const MessageType &msg_type,
-                               py::kwargs kwargs, double delay = 0.0);
+                               py::kwargs kwargs, double delay = 0.0,
+                               int priority = 3);
 
 ReplyFuture actor_request_at_object(PythonActor &self, double when,
-                                    py::object obj);
+                                    py::object obj, int priority = 3);
 
 ReplyFuture actor_request_at_type(PythonActor &self, double when,
                                   const MessageType &msg_type,
-                                  py::kwargs kwargs);
+                                  py::kwargs kwargs, int priority = 3);
 
 void actor_reply(PythonActor &self, py::object value);
 

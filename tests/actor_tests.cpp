@@ -1,6 +1,9 @@
 #include "hybridsim/hybridsim.hpp"
 
+#include "hybridsim/priority_store.hpp"
+
 #include <cassert>
+#include <functional>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -158,6 +161,59 @@ void test_mailbox_ordering() {
 
   assert(order == std::vector<int>({1, 2, 3}));
   std::cout << "PASS: mailbox_ordering\n";
+}
+
+void test_mailbox_priority() {
+  simcpp20::simulation<> sim;
+  std::vector<int> order;
+
+  actor a(sim);
+  a.on<SetMsg>([&](actor &self, SetMsg &msg) {
+    order.push_back(msg.value);
+    if (msg.value == 0) {
+      self.send(SetMsg{3}, 0.0, kMsgPriorityDefault);
+      self.send(SetMsg{1}, 0.0, kMsgPriorityHigh);
+      self.send(SetMsg{5}, 0.0, kMsgPriorityLow);
+    }
+  });
+  a.start();
+  a.send(SetMsg{0});
+  sim.run();
+
+  assert(order == std::vector<int>({0, 1, 3, 5}));
+  std::cout << "PASS: mailbox_priority\n";
+}
+
+void test_send_at_preserves_priority() {
+  simcpp20::simulation<> sim;
+  std::vector<int> order;
+
+  actor a(sim);
+  a.on<SetMsg>([&](simcpp20::simulation<> &sim, actor &,
+                   SetMsg &msg) -> simcpp20::process<> {
+    if (msg.value == 0) {
+      co_await sim.timeout(1.0);
+    }
+    order.push_back(msg.value);
+  });
+  a.start();
+  a.send(SetMsg{0});
+  a.send_at(0.5, SetMsg{3}, kMsgPriorityDefault);
+  a.send_at(0.5, SetMsg{1}, kMsgPriorityHigh);
+  sim.run();
+
+  assert(order == std::vector<int>({0, 1, 3}));
+  std::cout << "PASS: send_at_preserves_priority\n";
+}
+
+void test_invalid_priority_throws() {
+  simcpp20::simulation<> sim;
+  actor a(sim);
+  a.on<SetMsg>([](actor &, SetMsg &) {});
+  a.start();
+  expect_exception([&]() { a.send(SetMsg{1}, 0.0, 0); }, "priority");
+  expect_exception([&]() { a.send(SetMsg{1}, 0.0, 6); }, "priority");
+  std::cout << "PASS: invalid_priority_throws\n";
 }
 
 void test_ping_pong() {
@@ -337,6 +393,9 @@ int main() {
   test_multi_type_dispatch();
   test_unknown_message_throws();
   test_mailbox_ordering();
+  test_mailbox_priority();
+  test_send_at_preserves_priority();
+  test_invalid_priority_throws();
   test_ping_pong();
   test_request_explicit_reply();
   test_request_auto_empty_reply();

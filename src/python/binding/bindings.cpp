@@ -99,72 +99,78 @@ def __await__(self):
       .def(
           "send",
           [](hybridsim::python::PythonActor &self, py::object arg, double delay,
-             py::kwargs kwargs) {
+             int priority, py::kwargs kwargs) {
             if (py::isinstance<hybridsim::python::MessageType>(arg)) {
               hybridsim::python::actor_send_type(
                   self, arg.cast<hybridsim::python::MessageType>(), kwargs,
-                  delay);
+                  delay, priority);
               return;
             }
             if (!kwargs.empty()) {
               throw std::runtime_error(
                   "keyword arguments require a MessageType as the first argument");
             }
-            hybridsim::python::actor_send_object(self, std::move(arg), delay);
+            hybridsim::python::actor_send_object(self, std::move(arg), delay,
+                                                 priority);
           },
           py::arg("message"), py::arg("delay") = 0.0,
-          "Send a message (optional delay: receiver gets it after delay sim time)")
+          py::arg("priority") = 3,
+          "Send a message (optional delay / mailbox priority 1=high .. 5=low)")
       .def(
           "send_at",
           [](hybridsim::python::PythonActor &self, double when, py::object arg,
-             py::kwargs kwargs) {
+             int priority, py::kwargs kwargs) {
             if (py::isinstance<hybridsim::python::MessageType>(arg)) {
               hybridsim::python::actor_send_at_type(
-                  self, when, arg.cast<hybridsim::python::MessageType>(), kwargs);
+                  self, when, arg.cast<hybridsim::python::MessageType>(),
+                  kwargs, priority);
               return;
             }
             if (!kwargs.empty()) {
               throw std::runtime_error(
                   "keyword arguments require a MessageType as the first argument");
             }
-            hybridsim::python::actor_send_at_object(self, when, std::move(arg));
+            hybridsim::python::actor_send_at_object(self, when, std::move(arg),
+                                                    priority);
           },
-          py::arg("when"), py::arg("message"),
+          py::arg("when"), py::arg("message"), py::arg("priority") = 3,
           "Deliver a message at simulation time `when` (immediate if when <= now)")
       .def(
           "request",
           [](hybridsim::python::PythonActor &self, py::object arg, double delay,
-             py::kwargs kwargs) {
+             int priority, py::kwargs kwargs) {
             if (py::isinstance<hybridsim::python::MessageType>(arg)) {
               return hybridsim::python::actor_request_type(
                   self, arg.cast<hybridsim::python::MessageType>(), kwargs,
-                  delay);
+                  delay, priority);
             }
             if (!kwargs.empty()) {
               throw std::runtime_error(
                   "keyword arguments require a MessageType as the first argument");
             }
-            return hybridsim::python::actor_request_object(self, std::move(arg),
-                                                          delay);
+            return hybridsim::python::actor_request_object(
+                self, std::move(arg), delay, priority);
           },
           py::arg("message"), py::arg("delay") = 0.0,
+          py::arg("priority") = 3,
           "Send a request after optional delay; return ReplyFuture")
       .def(
           "request_at",
           [](hybridsim::python::PythonActor &self, double when, py::object arg,
-             py::kwargs kwargs) {
+             int priority, py::kwargs kwargs) {
             if (py::isinstance<hybridsim::python::MessageType>(arg)) {
               return hybridsim::python::actor_request_at_type(
-                  self, when, arg.cast<hybridsim::python::MessageType>(), kwargs);
+                  self, when, arg.cast<hybridsim::python::MessageType>(),
+                  kwargs, priority);
             }
             if (!kwargs.empty()) {
               throw std::runtime_error(
                   "keyword arguments require a MessageType as the first argument");
             }
             return hybridsim::python::actor_request_at_object(
-                self, when, std::move(arg));
+                self, when, std::move(arg), priority);
           },
-          py::arg("when"), py::arg("message"),
+          py::arg("when"), py::arg("message"), py::arg("priority") = 3,
           "Deliver a request at `when` and return a ReplyFuture")
       .def(
           "reply",

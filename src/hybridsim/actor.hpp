@@ -2,6 +2,7 @@
 
 #include "hybridsim/handler.hpp"
 #include "hybridsim/message.hpp"
+#include "hybridsim/priority_store.hpp"
 #include "hybridsim/request.hpp"
 
 #include "fschuetz04/simcpp20.hpp"
@@ -25,48 +26,54 @@ public:
         detail::make_dispatcher<Msg>(std::forward<F>(handler));
   }
 
-  void send(std::shared_ptr<message> msg, double delay = 0.0) {
+  void send(std::shared_ptr<message> msg, double delay = 0.0,
+            int priority = kMsgPriorityDefault) {
     if (delay > 0.0) {
-      send_at(sim_.now() + delay, std::move(msg));
+      send_at(sim_.now() + delay, std::move(msg), priority);
       return;
     }
-    mailbox_.put(std::move(msg));
+    mailbox_.put(std::move(msg), priority);
   }
 
-  template <typename Msg> void send(Msg msg, double delay = 0.0) {
-    send(make_message<Msg>(std::move(msg)), delay);
+  template <typename Msg>
+  void send(Msg msg, double delay = 0.0, int priority = kMsgPriorityDefault) {
+    send(make_message<Msg>(std::move(msg)), delay, priority);
   }
 
   // Deliver at simulation time `when` (immediate if when <= now).
-  void send_at(double when, std::shared_ptr<message> msg) {
+  void send_at(double when, std::shared_ptr<message> msg,
+               int priority = kMsgPriorityDefault) {
     if (when <= sim_.now()) {
-      send(std::move(msg));
+      send(std::move(msg), 0.0, priority);
       return;
     }
-    delayed_deliver(sim_, *this, when, std::move(msg));
+    delayed_deliver(sim_, *this, when, std::move(msg), priority);
   }
 
-  template <typename Msg> void send_at(double when, Msg msg) {
-    send_at(when, make_message<Msg>(std::move(msg)));
+  template <typename Msg>
+  void send_at(double when, Msg msg, int priority = kMsgPriorityDefault) {
+    send_at(when, make_message<Msg>(std::move(msg)), priority);
   }
 
   /// Wrap ``msg`` in a request envelope and return an awaitable reply event.
   /// If ``delay`` > 0, the receiver sees the request after ``delay`` sim time.
   template <typename Reply = std::monostate, typename Msg>
-  simcpp20::value_event<Reply> request(Msg msg, double delay = 0.0) {
+  simcpp20::value_event<Reply>
+  request(Msg msg, double delay = 0.0, int priority = kMsgPriorityDefault) {
     auto env =
         std::make_shared<request_envelope<Msg, Reply>>(sim_, std::move(msg));
     auto reply = env->reply_event;
-    send(std::static_pointer_cast<message>(env), delay);
+    send(std::static_pointer_cast<message>(env), delay, priority);
     return reply;
   }
 
   template <typename Reply = std::monostate, typename Msg>
-  simcpp20::value_event<Reply> request_at(double when, Msg msg) {
+  simcpp20::value_event<Reply>
+  request_at(double when, Msg msg, int priority = kMsgPriorityDefault) {
     auto env =
         std::make_shared<request_envelope<Msg, Reply>>(sim_, std::move(msg));
     auto reply = env->reply_event;
-    send_at(when, std::static_pointer_cast<message>(env));
+    send_at(when, std::static_pointer_cast<message>(env), priority);
     return reply;
   }
 
@@ -123,7 +130,7 @@ public:
 
 protected:
   simcpp20::simulation<> &sim_;
-  simcpp20::store<std::shared_ptr<message>> mailbox_;
+  priority_store<std::shared_ptr<message>> mailbox_;
   std::unordered_map<std::type_index, handler_dispatcher> handlers_;
   simcpp20::process<> run_process_;
   bool running_ = true;
@@ -134,9 +141,10 @@ protected:
 private:
   static simcpp20::process<> delayed_deliver(simcpp20::simulation<> &sim,
                                              actor &self, double when,
-                                             std::shared_ptr<message> msg) {
+                                             std::shared_ptr<message> msg,
+                                             int priority) {
     co_await sim.timeout(when - sim.now());
-    self.send(std::move(msg));
+    self.send(std::move(msg), 0.0, priority);
   }
 
   static simcpp20::process<> delayed_reply(simcpp20::simulation<> &sim,

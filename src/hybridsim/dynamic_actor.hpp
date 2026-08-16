@@ -1,6 +1,7 @@
 #pragma once
 
 #include "hybridsim/dynamic_message.hpp"
+#include "hybridsim/priority_store.hpp"
 
 #include "fschuetz04/simcpp20.hpp"
 
@@ -28,38 +29,42 @@ public:
     handlers_[type_id] = std::move(dispatcher);
   }
 
-  void send(std::shared_ptr<dynamic_message> msg, double delay = 0.0) {
+  void send(std::shared_ptr<dynamic_message> msg, double delay = 0.0,
+            int priority = kMsgPriorityDefault) {
     if (delay > 0.0) {
-      send_at(sim_.now() + delay, std::move(msg));
+      send_at(sim_.now() + delay, std::move(msg), priority);
       return;
     }
-    mailbox_.put(std::move(msg));
+    mailbox_.put(std::move(msg), priority);
   }
 
   // Deliver at simulation time `when` (immediate if when <= now).
-  void send_at(double when, std::shared_ptr<dynamic_message> msg) {
+  void send_at(double when, std::shared_ptr<dynamic_message> msg,
+               int priority = kMsgPriorityDefault) {
     if (when <= sim_.now()) {
-      send(std::move(msg));
+      send(std::move(msg), 0.0, priority);
       return;
     }
-    delayed_deliver(sim_, *this, when, std::move(msg));
+    delayed_deliver(sim_, *this, when, std::move(msg), priority);
   }
 
   /// Request/reply: wraps payload with a reply channel; await the returned event.
   /// If ``delay`` > 0, the receiver sees the request after ``delay`` sim time.
   simcpp20::value_event<std::any>
-  request(std::size_t type_id, std::any payload, double delay = 0.0) {
+  request(std::size_t type_id, std::any payload, double delay = 0.0,
+          int priority = kMsgPriorityDefault) {
     auto msg = make_dynamic_request(type_id, std::move(payload), sim_);
     auto event = msg->reply_channel()->event;
-    send(std::move(msg), delay);
+    send(std::move(msg), delay, priority);
     return event;
   }
 
   simcpp20::value_event<std::any>
-  request_at(double when, std::size_t type_id, std::any payload) {
+  request_at(double when, std::size_t type_id, std::any payload,
+             int priority = kMsgPriorityDefault) {
     auto msg = make_dynamic_request(type_id, std::move(payload), sim_);
     auto event = msg->reply_channel()->event;
-    send_at(when, std::move(msg));
+    send_at(when, std::move(msg), priority);
     return event;
   }
 
@@ -128,9 +133,9 @@ public:
 private:
   static simcpp20::process<>
   delayed_deliver(simcpp20::simulation<> &sim, dynamic_actor &self, double when,
-                  std::shared_ptr<dynamic_message> msg) {
+                  std::shared_ptr<dynamic_message> msg, int priority) {
     co_await sim.timeout(when - sim.now());
-    self.send(std::move(msg));
+    self.send(std::move(msg), 0.0, priority);
   }
 
   static simcpp20::process<>
@@ -184,7 +189,7 @@ private:
   }
 
   simcpp20::simulation<> &sim_;
-  simcpp20::store<std::shared_ptr<dynamic_message>> mailbox_;
+  priority_store<std::shared_ptr<dynamic_message>> mailbox_;
   std::unordered_map<std::size_t, dynamic_handler_dispatcher> handlers_;
   simcpp20::process<> run_process_;
   bool running_ = true;

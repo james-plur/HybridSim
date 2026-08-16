@@ -131,6 +131,42 @@ void test_workload_complete_handler() {
   std::cout << "PASS: workload_complete_handler\n";
 }
 
+simcpp20::process<> delayed_workload(simcpp20::simulation<> &sim,
+                                     engine_actor &engine, workload_spec spec,
+                                     double delay) {
+  co_await sim.timeout(delay);
+  engine.send(WorkloadMsg{.spec = std::move(spec)});
+}
+
+void test_workload_done_priority() {
+  simcpp20::simulation<> sim;
+  engine_actor engine(sim);
+  std::vector<std::pair<double, int64_t>> dones;
+
+  engine.set_on_workload_complete([&](const WorkloadDoneMsg &msg) {
+    dones.emplace_back(sim.now(), msg.workload_id);
+  });
+  engine.start();
+
+  workload_spec first{
+      .workload_id = 1,
+      .kernels = {{"A", 0, 1.0, {}}},
+  };
+  workload_spec second{
+      .workload_id = 2,
+      .kernels = {{"B", 0, 1.0, {}}},
+  };
+
+  engine.send(WorkloadMsg{.spec = first});
+  delayed_workload(sim, engine, second, 0.5);
+  sim.run();
+
+  assert(dones.size() == 2);
+  assert(dones[0] == std::make_pair(1.0, int64_t{1}));
+  assert(dones[1] == std::make_pair(2.0, int64_t{2}));
+  std::cout << "PASS: workload_done_priority\n";
+}
+
 void test_invalid_cycle() {
   workload_spec spec{
       .workload_id = 3,
@@ -166,6 +202,7 @@ int main() {
   test_linear_chain();
   test_diamond_parallel();
   test_workload_complete_handler();
+  test_workload_done_priority();
   test_invalid_cycle();
   test_kernel_params();
   std::cout << "All engine actor tests passed.\n";

@@ -47,21 +47,55 @@ class ActorBase:
     def stop(self) -> None:
         self._actor.stop()
 
-    def send(self, msg_cls: type, *, delay: float = 0.0, **kwargs) -> None:
-        self._actor.send(self._messages[msg_cls.__name__], delay=delay, **kwargs)
-
-    def send_at(self, when: float, msg_cls: type, **kwargs) -> None:
-        self._actor.send_at(when, self._messages[msg_cls.__name__], **kwargs)
-
-    def request(self, target: ActorBase, msg_cls: type, *, delay: float = 0.0, **kwargs):
-        """Request/reply to ``target``; await the returned ReplyFuture in async handlers."""
-        return target._actor.request(
-            self._messages[msg_cls.__name__], delay=delay, **kwargs
+    def send(self, msg_cls: type, *, delay: float = 0.0, priority: int = 3,
+             **kwargs) -> None:
+        self._actor.send(
+            self._messages[msg_cls.__name__],
+            delay=delay,
+            priority=priority,
+            **kwargs,
         )
 
-    def request_at(self, target: ActorBase, when: float, msg_cls: type, **kwargs):
+    def send_at(self, when: float, msg_cls: type, *, priority: int = 3,
+                **kwargs) -> None:
+        self._actor.send_at(
+            when,
+            self._messages[msg_cls.__name__],
+            priority=priority,
+            **kwargs,
+        )
+
+    def request(
+        self,
+        target: ActorBase,
+        msg_cls: type,
+        *,
+        delay: float = 0.0,
+        priority: int = 3,
+        **kwargs,
+    ):
+        """Request/reply to ``target``; await the returned ReplyFuture in async handlers."""
+        return target._actor.request(
+            self._messages[msg_cls.__name__],
+            delay=delay,
+            priority=priority,
+            **kwargs,
+        )
+
+    def request_at(
+        self,
+        target: ActorBase,
+        when: float,
+        msg_cls: type,
+        *,
+        priority: int = 3,
+        **kwargs,
+    ):
         return target._actor.request_at(
-            when, self._messages[msg_cls.__name__], **kwargs
+            when,
+            self._messages[msg_cls.__name__],
+            priority=priority,
+            **kwargs,
         )
 
     def reply(self, value=None) -> None:

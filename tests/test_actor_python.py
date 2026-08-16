@@ -274,6 +274,70 @@ class ActorPythonTests(unittest.TestCase):
             [(1.0, "set:1"), (2.0, "query:9"), (2.0, "client_done:9")],
         )
 
+    def test_mailbox_priority(self) -> None:
+        sim = hs.Simulation()
+        Tick = sim.register_message("Tick")
+        actor = hs.Actor(sim)
+        order: list[int] = []
+
+        def on_tick(_actor, msg):
+            order.append(msg.n)
+            if msg.n == 0:
+                actor.send(Tick, n=3)
+                actor.send(Tick, priority=1, n=1)
+                actor.send(Tick, priority=5, n=5)
+
+        actor.on(Tick, on_tick)
+        actor.start()
+        actor.send(Tick, n=0)
+        sim.run()
+        actor.check_error()
+        self.assertEqual(order, [0, 1, 3, 5])
+
+    def test_send_at_preserves_priority(self) -> None:
+        sim = hs.Simulation()
+        Tick = sim.register_message("Tick")
+        Hold = sim.register_message("Hold")
+        Release = sim.register_message("Release")
+        actor = hs.Actor(sim)
+        gate = hs.Actor(sim)
+        order: list[int] = []
+
+        def on_release(a, _msg):
+            a.reply()
+
+        async def on_hold(_actor, _msg):
+            await gate.request_at(1.0, Release)
+
+        def on_tick(_actor, msg):
+            order.append(msg.n)
+
+        gate.on(Release, on_release)
+        actor.on(Hold, on_hold)
+        actor.on(Tick, on_tick)
+        actor.start()
+        gate.start()
+        actor.send(Hold)
+        actor.send_at(0.5, Tick, priority=3, n=3)
+        actor.send_at(0.5, Tick, priority=1, n=1)
+        sim.run()
+        actor.check_error()
+        gate.check_error()
+        self.assertEqual(order, [1, 3])
+
+    def test_invalid_priority_raises(self) -> None:
+        sim = hs.Simulation()
+        Tick = sim.register_message("Tick")
+        actor = hs.Actor(sim)
+        actor.on(Tick, lambda _a, _m: None)
+        actor.start()
+        with self.assertRaises(RuntimeError) as ctx:
+            actor.send(Tick, priority=0)
+        self.assertIn("priority", str(ctx.exception))
+        with self.assertRaises(RuntimeError) as ctx:
+            actor.send(Tick, priority=6)
+        self.assertIn("priority", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

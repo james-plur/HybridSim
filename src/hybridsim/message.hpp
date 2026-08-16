@@ -6,6 +6,14 @@
 
 namespace hybridsim {
 
+/// Mailbox bands: smaller number is served first (SimPy PriorityStore).
+inline constexpr int kMsgPriorityLevels = 5;
+inline constexpr int kMsgPriorityHigh = 1;
+inline constexpr int kMsgPriorityDefault = 3;
+inline constexpr int kMsgPriorityLow = 5;
+
+
+
 class message {
 public:
   virtual ~message() = default;

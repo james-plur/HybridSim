@@ -17,7 +17,7 @@ public:
     on<WorkloadMsg>([this](simcpp20::simulation<> &sim, actor &self,
                            WorkloadMsg &msg) -> simcpp20::process<> {
       co_await schedule_dag(sim, msg.spec, factory_);
-      self.send(WorkloadDoneMsg{msg.spec.workload_id});
+      self.send(WorkloadDoneMsg{msg.spec.workload_id}, 0.0, kMsgPriorityHigh);
     });
 
     on<WorkloadDoneMsg>([this](actor &, WorkloadDoneMsg &msg) {

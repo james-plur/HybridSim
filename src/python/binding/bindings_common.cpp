@@ -117,7 +117,8 @@ void actor_on(const std::shared_ptr<PythonActor> &self,
                   });
 }
 
-void actor_send_object(PythonActor &self, py::object obj, double delay) {
+void actor_send_object(PythonActor &self, py::object obj, double delay,
+                       int priority) {
   const std::size_t type_id = registry().type_id_for(obj);
   if (!py::hasattr(obj, "_hybridsim_type_id")) {
     obj.attr("_hybridsim_type_id") = py::int_(type_id);
@@ -125,16 +126,18 @@ void actor_send_object(PythonActor &self, py::object obj, double delay) {
         py::str(message_registry::instance().name(type_id));
   }
   self.actor->send(make_dynamic_message(type_id, std::any(py::object(obj))),
-                   delay);
+                   delay, priority);
 }
 
 void actor_send_type(PythonActor &self, const MessageType &msg_type,
-                     py::kwargs kwargs, double delay) {
+                     py::kwargs kwargs, double delay, int priority) {
   py::object obj = make_message_object(msg_type, kwargs);
-  self.actor->send(make_dynamic_message(msg_type.id, std::any(obj)), delay);
+  self.actor->send(make_dynamic_message(msg_type.id, std::any(obj)), delay,
+                   priority);
 }
 
-void actor_send_at_object(PythonActor &self, double when, py::object obj) {
+void actor_send_at_object(PythonActor &self, double when, py::object obj,
+                          int priority) {
   const std::size_t type_id = registry().type_id_for(obj);
   if (!py::hasattr(obj, "_hybridsim_type_id")) {
     obj.attr("_hybridsim_type_id") = py::int_(type_id);
@@ -142,18 +145,20 @@ void actor_send_at_object(PythonActor &self, double when, py::object obj) {
         py::str(message_registry::instance().name(type_id));
   }
   self.actor->send_at(when,
-                      make_dynamic_message(type_id, std::any(py::object(obj))));
+                      make_dynamic_message(type_id, std::any(py::object(obj))),
+                      priority);
 }
 
 void actor_send_at_type(PythonActor &self, double when,
-                        const MessageType &msg_type, py::kwargs kwargs) {
+                        const MessageType &msg_type, py::kwargs kwargs,
+                        int priority) {
   py::object obj = make_message_object(msg_type, kwargs);
-  self.actor->send_at(when,
-                      make_dynamic_message(msg_type.id, std::any(obj)));
+  self.actor->send_at(when, make_dynamic_message(msg_type.id, std::any(obj)),
+                      priority);
 }
 
 ReplyFuture actor_request_object(PythonActor &self, py::object obj,
-                                 double delay) {
+                                 double delay, int priority) {
   const std::size_t type_id = registry().type_id_for(obj);
   if (!py::hasattr(obj, "_hybridsim_type_id")) {
     obj.attr("_hybridsim_type_id") = py::int_(type_id);
@@ -163,18 +168,18 @@ ReplyFuture actor_request_object(PythonActor &self, py::object obj,
   auto msg =
       make_dynamic_request(type_id, std::any(py::object(obj)), *self.state->sim);
   ReplyFuture fut{msg->reply_channel_ptr()};
-  self.actor->send(std::move(msg), delay);
+  self.actor->send(std::move(msg), delay, priority);
   return fut;
 }
 
 ReplyFuture actor_request_type(PythonActor &self, const MessageType &msg_type,
-                               py::kwargs kwargs, double delay) {
+                               py::kwargs kwargs, double delay, int priority) {
   py::object obj = make_message_object(msg_type, kwargs);
-  return actor_request_object(self, std::move(obj), delay);
+  return actor_request_object(self, std::move(obj), delay, priority);
 }
 
 ReplyFuture actor_request_at_object(PythonActor &self, double when,
-                                    py::object obj) {
+                                    py::object obj, int priority) {
   const std::size_t type_id = registry().type_id_for(obj);
   if (!py::hasattr(obj, "_hybridsim_type_id")) {
     obj.attr("_hybridsim_type_id") = py::int_(type_id);
@@ -184,15 +189,15 @@ ReplyFuture actor_request_at_object(PythonActor &self, double when,
   auto msg =
       make_dynamic_request(type_id, std::any(py::object(obj)), *self.state->sim);
   ReplyFuture fut{msg->reply_channel_ptr()};
-  self.actor->send_at(when, std::move(msg));
+  self.actor->send_at(when, std::move(msg), priority);
   return fut;
 }
 
 ReplyFuture actor_request_at_type(PythonActor &self, double when,
                                   const MessageType &msg_type,
-                                  py::kwargs kwargs) {
+                                  py::kwargs kwargs, int priority) {
   py::object obj = make_message_object(msg_type, kwargs);
-  return actor_request_at_object(self, when, std::move(obj));
+  return actor_request_at_object(self, when, std::move(obj), priority);
 }
 
 void actor_reply(PythonActor &self, py::object value) {

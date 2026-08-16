@@ -188,12 +188,12 @@ class ReplicaActor(ActorBase):
     def _on_worker_complete(
         self, workload_id: int, schedule_batch: Optional[Any]
     ) -> None:
-        self.send(BatchEndMsg, workload_id=workload_id, batch=schedule_batch)
+        self.send(BatchEndMsg, priority=1, workload_id=workload_id, batch=schedule_batch)
 
     def _on_kv_transfer_complete(
         self, _workload_id: int, request_id: int, direction: str
     ) -> None:
-        self.send(KVTransferEndMsg, request_id=request_id, direction=direction)
+        self.send(KVTransferEndMsg, priority=1, request_id=request_id, direction=direction)
 
     def _maybe_handoff_prefill(self, req: InferenceRequest) -> bool:
         """If request asks for remote decode and Prefill is done, hand off to Cluster."""
