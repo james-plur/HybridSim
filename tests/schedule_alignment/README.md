@@ -3,7 +3,8 @@
 测试套件：同输入下对齐 **replica 内 schedule 输出**（不关注 cluster 分发、不跑真实 GPU）。
 设计意图见 `hybridsimdesign/hybridsim inference offline校准.md`。
 
-**代码级对齐说明（推荐先读）**：[schedule_alignment.md](schedule_alignment.md)  
+**调度实现（请求 → batch，含本套件怎么跑）**：[`docs/scheduler.md`](../../docs/scheduler.md)  
+**代码级对齐说明**：[schedule_alignment.md](schedule_alignment.md)  
 **回归报告**：[TEST_REPORT.md](TEST_REPORT.md)
 
 | File | Role |

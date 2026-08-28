@@ -46,7 +46,7 @@ MODEL_PRESET = "deepseek-v3.2"
 TRACE_REL = Path("src/python/hybridsim_infer/request_generators/kvcache_traces/normalized/qwen_bailian_traceA.jsonl")
 BLOCK_SIZE = 16
 H100_HBM_GB = 80.0
-H100_PEAK_FLOPS = 989e12
+H100_PEAK_FLOPS = 989e12 * 8  # 8× H100 BF16 peak
 H100_HBM_BPS = 1e15  # inflated so compute is not HBM-bound
 BANDWIDTHS_GBPS = (25, 50, 100, 200, 400)
 STORE_CAPACITIES_GB = (32, 128, 512, 2048, 8192)
@@ -82,42 +82,50 @@ def gpu_num_blocks_for_hbm_gb(
     return usable + 1
 
 
+def _fmt_bw(bandwidth_gbps: float) -> str:
+    """Stable label for float Gbps (3.125 → '3.125', 25.0 → '25')."""
+    bw = float(bandwidth_gbps)
+    if abs(bw - round(bw)) < 1e-9:
+        return str(int(round(bw)))
+    return f"{bw:g}"
+
+
 def _cell_key(bandwidth_gbps: float, store_gb: float) -> str:
-    return f"{int(bandwidth_gbps)}gbps_{int(store_gb)}gb"
+    return f"{_fmt_bw(bandwidth_gbps)}gbps_{int(store_gb)}gb"
 
 
 def ordered_sweep_cells(
-    bandwidths: list[int],
+    bandwidths: list[float],
     capacities: list[int],
     *,
     anchor_capacity: int | None = None,
-    anchor_bandwidth: int | None = None,
-) -> list[tuple[int, int]]:
+    anchor_bandwidth: float | None = None,
+) -> list[tuple[float, int]]:
     """Visit cells so early results cover one full BW axis and one full capacity axis.
 
     1. Fix ``anchor_capacity`` (default: first capacity), sweep all bandwidths.
     2. Fix ``anchor_bandwidth`` (default: first bandwidth), sweep remaining capacities.
     3. Fill the rest, capacity-major then bandwidth.
     """
-    bws = [int(x) for x in bandwidths]
+    bws = [float(x) for x in bandwidths]
     caps = [int(x) for x in capacities]
     if not bws or not caps:
         raise ValueError("bandwidths and capacities must be non-empty")
     cap0 = int(caps[0] if anchor_capacity is None else anchor_capacity)
-    bw0 = int(bws[0] if anchor_bandwidth is None else anchor_bandwidth)
+    bw0 = float(bws[0] if anchor_bandwidth is None else anchor_bandwidth)
     if cap0 not in caps:
         raise ValueError(f"anchor_capacity={cap0} not in {caps}")
-    if bw0 not in bws:
+    if not any(abs(bw0 - b) < 1e-9 for b in bws):
         raise ValueError(f"anchor_bandwidth={bw0} not in {bws}")
 
-    seen: set[tuple[int, int]] = set()
-    order: list[tuple[int, int]] = []
+    seen: set[str] = set()
+    order: list[tuple[float, int]] = []
 
-    def _add(bw: int, cap: int) -> None:
-        key = (int(bw), int(cap))
+    def _add(bw: float, cap: int) -> None:
+        key = _cell_key(bw, cap)
         if key not in seen:
             seen.add(key)
-            order.append(key)
+            order.append((float(bw), int(cap)))
 
     for bw in bws:
         _add(bw, cap0)
@@ -130,10 +138,9 @@ def ordered_sweep_cells(
 
 
 def _same_cell(a: dict[str, Any], b: dict[str, Any]) -> bool:
-    return int(a.get("kv_bandwidth_gbps", -1)) == int(b.get("kv_bandwidth_gbps", -2)) and int(
+    return abs(float(a.get("kv_bandwidth_gbps", -1)) - float(b.get("kv_bandwidth_gbps", -2))) < 1e-9 and int(
         a.get("kv_store_gb", -1)
     ) == int(b.get("kv_store_gb", -2))
-
 
 def load_results(path: Path) -> dict[str, Any]:
     if not path.exists():
@@ -157,7 +164,7 @@ def upsert_cell(path: Path, cell: dict[str, Any], meta: Optional[dict[str, Any]]
             data["meta"] = meta
         cells = [c for c in data.get("cells", []) if not _same_cell(c, cell)]
         cells.append(cell)
-        cells.sort(key=lambda c: (int(c["kv_store_gb"]), int(c["kv_bandwidth_gbps"])))
+        cells.sort(key=lambda c: (int(c["kv_store_gb"]), float(c["kv_bandwidth_gbps"])))
         data["cells"] = cells
         path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
@@ -247,8 +254,10 @@ def run_cell(payload: dict[str, Any]) -> dict[str, Any]:
             bytes_per_token as bpt_fn,
         )
 
+        model_preset = str(payload.get("model_preset") or MODEL_PRESET)
+        peak_flops = float(payload.get("peak_flops") or H100_PEAK_FLOPS)
         bpt = float(payload["bytes_per_token"])
-        measured = float(bpt_fn(MODEL_PRESET, num_tokens=1))
+        measured = float(bpt_fn(model_preset, num_tokens=1))
         if abs(measured - bpt) > 1e-6:
             raise AssertionError(
                 f"KV bytes/token mismatch: preset={measured} expected={bpt}"
@@ -259,11 +268,12 @@ def run_cell(payload: dict[str, Any]) -> dict[str, Any]:
         store_blocks = int(payload["kv_store_blocks"])
         gpu_blocks = int(payload["num_gpu_blocks"])
         max_requests = payload.get("max_requests")
+        time_scale = float(payload.get("time_scale") or 1.0)
         trace_path = Path(payload["trace_path"])
 
         analytical = AnalyticalConfig(
             device=DeviceConfig(
-                peak_flops=H100_PEAK_FLOPS,
+                peak_flops=peak_flops,
                 hbm_bandwidth_bps=H100_HBM_BPS,
                 compute_util=0.6,
                 hbm_util=0.6,
@@ -274,7 +284,7 @@ def run_cell(payload: dict[str, Any]) -> dict[str, Any]:
             cluster_type="monolith",
             num_replicas=1,
             duration_mode="analytical",
-            model_preset=MODEL_PRESET,
+            model_preset=model_preset,
             analytical_config=analytical,
             enable_kv_client=True,
             enable_prefix_caching=True,
@@ -299,6 +309,7 @@ def run_cell(payload: dict[str, Any]) -> dict[str, Any]:
             trace_path,
             block_size=BLOCK_SIZE,
             max_requests=None if max_requests is None else int(max_requests),
+            time_scale=time_scale,
         )
         requests = gen.generate()
         for req in requests:
@@ -337,16 +348,17 @@ def run_cell(payload: dict[str, Any]) -> dict[str, Any]:
             sim_now=float(infra.now),
         )
         cell = {
-            "kv_bandwidth_gbps": int(bandwidth_gbps),
+            "kv_bandwidth_gbps": float(bandwidth_gbps),
             "kv_store_gb": int(store_gb),
             "kv_store_blocks": store_blocks,
+            "time_scale": time_scale,
             "ok": True,
             **metrics,
         }
         return cell
     except Exception as exc:  # noqa: BLE001 — worker must always return
         return {
-            "kv_bandwidth_gbps": int(payload.get("kv_bandwidth_gbps", -1)),
+            "kv_bandwidth_gbps": float(payload.get("kv_bandwidth_gbps", -1)),
             "kv_store_gb": int(payload.get("kv_store_gb", -1)),
             "kv_store_blocks": int(payload.get("kv_store_blocks", -1)),
             "ok": False,
@@ -364,7 +376,7 @@ def _worker_entry(payload: dict[str, Any], result_q: Queue) -> None:
     def _on_term(_signum: int, _frame: Any) -> None:
         result_q.put(
             {
-                "kv_bandwidth_gbps": int(payload.get("kv_bandwidth_gbps", -1)),
+                "kv_bandwidth_gbps": float(payload.get("kv_bandwidth_gbps", -1)),
                 "kv_store_gb": int(payload.get("kv_store_gb", -1)),
                 "ok": False,
                 "retry": True,
@@ -503,7 +515,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--workers", type=int, default=0, help="0 → min(8, cpu_count)")
     parser.add_argument(
         "--bandwidths",
-        type=int,
+        type=float,
         nargs="+",
         default=list(BANDWIDTHS_GBPS),
     )
@@ -552,35 +564,61 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--anchor-bandwidth",
-        type=int,
+        type=float,
         default=None,
         help="Phase-2 fixed pull bandwidth Gbps (default: first --bandwidths value)",
+    )
+    parser.add_argument(
+        "--time-scale",
+        type=float,
+        default=1.0,
+        help="Multiply trace timestamps (e.g. 0.5 halves inter-arrival times)",
+    )
+    parser.add_argument(
+        "--model-preset",
+        type=str,
+        default=MODEL_PRESET,
+        help="Analytical model preset id",
+    )
+    parser.add_argument(
+        "--hbm-gb",
+        type=float,
+        default=H100_HBM_GB,
+        help="GPU HBM capacity used to size num_gpu_blocks",
+    )
+    parser.add_argument(
+        "--peak-flops",
+        type=float,
+        default=H100_PEAK_FLOPS,
+        help="Device peak FLOPS (default: 8× H100 BF16)",
     )
     return parser.parse_args(argv)
 
 
 def main(argv: Optional[list[str]] = None) -> int:
     args = parse_args(argv)
-    bpt = float(bytes_per_token(MODEL_PRESET, num_tokens=1))
-    if abs(bpt - DEFAULT_BYTES_PER_TOKEN) > 1e-6:
+    model_preset = str(args.model_preset)
+    bpt = float(bytes_per_token(model_preset, num_tokens=1))
+    if model_preset == MODEL_PRESET and abs(bpt - DEFAULT_BYTES_PER_TOKEN) > 1e-6:
         raise SystemExit(
             f"deepseek-v3.2 bytes/token={bpt}, expected {DEFAULT_BYTES_PER_TOKEN}"
         )
-    gpu_blocks = gpu_num_blocks_for_hbm_gb(H100_HBM_GB, bpt=bpt)
+    gpu_blocks = gpu_num_blocks_for_hbm_gb(float(args.hbm_gb), bpt=bpt)
     trace_path = Path(args.trace)
     if not trace_path.exists():
         raise SystemExit(f"trace not found: {trace_path}")
 
     meta = {
-        "model_preset": MODEL_PRESET,
+        "model_preset": model_preset,
         "bytes_per_token": bpt,
         "block_size": BLOCK_SIZE,
         "bytes_per_block": bytes_per_block(bpt),
         "num_gpu_blocks": gpu_blocks,
-        "h100_hbm_gb": H100_HBM_GB,
-        "h100_peak_flops": H100_PEAK_FLOPS,
+        "h100_hbm_gb": float(args.hbm_gb),
+        "h100_peak_flops": float(args.peak_flops),
         "h100_hbm_bandwidth_bps": H100_HBM_BPS,
         "trace": str(trace_path),
+        "time_scale": float(args.time_scale),
         "max_requests": args.max_requests,
         "cluster_type": "monolith",
         "num_replicas": 1,
@@ -590,7 +628,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         "anchor_capacity_gb": int(
             args.capacities[0] if args.anchor_capacity is None else args.anchor_capacity
         ),
-        "anchor_bandwidth_gbps": int(
+        "anchor_bandwidth_gbps": float(
             args.bandwidths[0] if args.anchor_bandwidth is None else args.anchor_bandwidth
         ),
     }
@@ -603,24 +641,27 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     jobs: list[dict[str, Any]] = []
     cell_order = ordered_sweep_cells(
-        [int(x) for x in args.bandwidths],
+        [float(x) for x in args.bandwidths],
         [int(x) for x in args.capacities],
         anchor_capacity=args.anchor_capacity,
         anchor_bandwidth=args.anchor_bandwidth,
     )
-    meta["cell_order"] = [f"{bw}gbps_{cap}gb" for bw, cap in cell_order]
+    meta["cell_order"] = [_cell_key(bw, cap) for bw, cap in cell_order]
     for bw, store_gb in cell_order:
         key = _cell_key(bw, store_gb)
         if key in done:
             continue
         jobs.append(
             {
-                "kv_bandwidth_gbps": int(bw),
+                "kv_bandwidth_gbps": float(bw),
                 "kv_store_gb": int(store_gb),
                 "kv_store_blocks": store_blocks_for_gb(store_gb, bpt=bpt),
                 "num_gpu_blocks": gpu_blocks,
                 "bytes_per_token": bpt,
+                "model_preset": model_preset,
+                "peak_flops": float(args.peak_flops),
                 "max_requests": args.max_requests,
+                "time_scale": float(args.time_scale),
                 "trace_path": str(trace_path),
                 "progress_path": str(args.progress_log),
                 "progress_interval_s": float(args.progress_interval),
@@ -637,7 +678,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     workers = max(1, min(workers, max(1, len(jobs))))
     print(
         f"cells={len(jobs)} skip={len(done)} workers={workers} "
-        f"bpt={bpt} gpu_blocks={gpu_blocks} "
+        f"model={model_preset} hbm_gb={args.hbm_gb} peak_flops={args.peak_flops} "
+        f"time_scale={args.time_scale} bpt={bpt} gpu_blocks={gpu_blocks} "
         f"progress={args.progress_log} "
         f"order={meta['cell_order']}",
         flush=True,

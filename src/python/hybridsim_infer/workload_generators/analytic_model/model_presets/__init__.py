@@ -1,4 +1,4 @@
-"""Bundled model shape presets (DeepSeek / GLM / Kimi / Llama)."""
+"""Bundled model shape presets (DeepSeek / GLM / Kimi / Llama / Qwen)."""
 
 from hybridsim_infer.workload_generators.analytic_model.model_presets.registry import (
     list_presets,

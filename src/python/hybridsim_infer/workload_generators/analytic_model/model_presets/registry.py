@@ -10,7 +10,7 @@ import yaml
 from hybridsim_infer.workload_generators.analytic_model.configs import ModelConfig
 
 _PRESETS_ROOT = Path(__file__).resolve().parent
-_FAMILY_DIRS = ("deepseek", "glm", "kimi", "llama")
+_FAMILY_DIRS = ("deepseek", "glm", "kimi", "llama", "qwen")
 
 # YAML keys that are metadata / not ModelConfig fields.
 _META_KEYS = frozenset({"id", "label", "family", "source_url", "dense_intermediate_size"})

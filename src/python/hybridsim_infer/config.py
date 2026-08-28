@@ -19,7 +19,9 @@ class InferenceConfig(SimulationConfig):
     num_prefill_replicas: int = 1
     #: PD: number of Decode-pool replicas (ids ``Np .. Np+Nd-1``).
     num_decode_replicas: int = 1
-    #: Delay between StepMsg ticks (avoids zero-time busy loop when idle work remains).
+    #: Unused by scheduling (kept for config compatibility). Replica steps are
+    #: event-driven: Request / BatchEnd / KVTransferEnd / KVLookupReply, plus a
+    #: same-tick re-arm only when the last ``on_step`` made progress.
     step_interval: float = 1e-3
     #: Dummy TimeoutKernel duration when ``duration_mode="fixed"``.
     dummy_exec_s: float = 0.05

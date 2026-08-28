@@ -87,6 +87,11 @@ class KvCacheManager(ABC):
     def client_busy(self) -> bool:
         return False
 
+    @property
+    def pending_kv_pull_count(self) -> int:
+        """In-flight remote KV pulls that will emit TransferEnd."""
+        return 0
+
     def attach_client(
         self,
         client: KvClient,
@@ -457,6 +462,10 @@ class VllmKvCacheManager(KvCacheManager):
     @property
     def client_busy(self) -> bool:
         return bool(self._client and self._client.busy)
+
+    @property
+    def pending_kv_pull_count(self) -> int:
+        return len(self._pending_kv_pulls)
 
     def attach_client(
         self,

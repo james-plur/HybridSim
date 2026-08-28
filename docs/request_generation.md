@@ -1,7 +1,9 @@
 # hybridsim 请求生成
 
 请求进入仿真的统一实体是 `InferenceRequest`（`hybridsim_infer/request.py`）。  
-三种生成方式都产出 `list[InferenceRequest]`，再经 `schedule_arrivals` / `schedule_from_generator` 注入 `ClusterScheduler`。
+三种生成方式都产出 `list[InferenceRequest]`，再经 `schedule_arrivals` / `schedule_from_generator` 注入 `ClusterActor`。
+
+请求到达之后如何变成 batch（集群分发、replica `schedule_step`、与 vLLM 对照、对齐测试）：[`scheduler.md`](scheduler.md)。
 
 ---
 

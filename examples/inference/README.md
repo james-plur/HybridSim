@@ -80,7 +80,7 @@ PD 配置：`num_prefill_replicas` / `num_decode_replicas`（总副本 = 二者�
 
 调度对齐套件在 **[`tests/schedule_alignment/`](../../tests/schedule_alignment/)**（不是 example）。
 
-文档：[schedule_alignment.md](../../tests/schedule_alignment/schedule_alignment.md) · 单元测试：`tests/test_schedule_alignment.py`
+文档：[docs/scheduler.md](../../docs/scheduler.md)（实现 + 对齐测试）· [schedule_alignment.md](../../tests/schedule_alignment/schedule_alignment.md)（代码映射）· 单元测试：`tests/test_schedule_alignment.py`
 
 ```bash
 HF_HUB_OFFLINE=1 VLLM_TARGET_DEVICE=cpu PYTHONPATH=src/python:tests:. \

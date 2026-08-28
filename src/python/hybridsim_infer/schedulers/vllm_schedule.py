@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import inspect
+import pprint
+import sys
 from typing import Any, Optional
 
 from hybridsim_infer.schedulers.factory import InferenceScheduler, RemoteLookupFn
@@ -54,6 +56,32 @@ class VllmScheduler(InferenceScheduler):
         if remaining <= 0:
             return 0
         return min(remaining, max(1, self.decode_tokens_per_step))
+
+    @staticmethod
+    def _raise_apc_attach_failed(
+        request: InferenceRequest,
+        local_hit: int,
+        kv_cache_manager: Any,
+    ) -> None:
+        """match() hit but attach_cached_prefix returned None: invariant bug."""
+        allocated = getattr(kv_cache_manager, "allocated", {}) or {}
+        dump = {
+            "request_id": getattr(request, "request_id", None),
+            "local_hit": int(local_hit),
+            "num_computed_tokens": getattr(request, "num_computed_tokens", None),
+            "num_prefill_tokens": getattr(request, "num_prefill_tokens", None),
+            "prompt_len": len(getattr(request, "prompt_token_ids", None) or []),
+            "free_blocks": getattr(kv_cache_manager, "free_blocks", None),
+            "num_gpu_blocks": getattr(kv_cache_manager, "num_gpu_blocks", None),
+            "allocated_blocks": {k: len(v) for k, v in allocated.items()},
+            "hash_table_size": len(getattr(kv_cache_manager, "_hash_to_block", {}) or {}),
+        }
+        print("APC attach_cached_prefix failed after match():", file=sys.stderr)
+        pprint.pprint(dump, stream=sys.stderr)
+        raise RuntimeError(
+            "APC attach_cached_prefix failed after match(); "
+            f"internal invariant violation: {dump!r}"
+        )
 
     @staticmethod
     def _preempt_fcfs(
@@ -168,7 +196,6 @@ class VllmScheduler(InferenceScheduler):
         list[RemoteKvPull],
         list[InferenceRequest],
         int,
-        bool,
         dict[int, int],
     ]:
         """Phase 2: admit WAITING requests."""
@@ -179,14 +206,9 @@ class VllmScheduler(InferenceScheduler):
         req_to_blocks: dict[int, list[Any]] = {}
         remote_pulls: list[RemoteKvPull] = []
         prefix_hits: dict[int, int] = {}
-        stop_after_remote = False
         queue = list(waiting)
 
         for i, request in enumerate(queue):
-            if stop_after_remote:
-                still_waiting.append(request)
-                continue
-
             if token_budget <= 0 or len(running) >= max_num_running_reqs:
                 still_waiting.extend(queue[i:])
                 break
@@ -207,9 +229,9 @@ class VllmScheduler(InferenceScheduler):
                 if local_hit > request.num_computed_tokens:
                     blocks = kv_cache_manager.attach_cached_prefix(request, local_hit)
                     if blocks is None:
-                        still_waiting.append(request)
-                        still_waiting.extend(queue[i + 1 :])
-                        break
+                        self._raise_apc_attach_failed(
+                            request, local_hit, kv_cache_manager
+                        )
                     request.num_computed_tokens = local_hit
                     prefix_hits[request.request_id] = int(local_hit)
                     request.record_prefix_hit(local_hit)
@@ -249,9 +271,7 @@ class VllmScheduler(InferenceScheduler):
                         )
                     )
                     still_waiting.append(request)
-                    still_waiting.extend(queue[i + 1 :])
-                    stop_after_remote = True
-                    break
+                    continue
 
             if request.is_finished():
                 request.status = RequestStatus.FINISHED
@@ -298,7 +318,6 @@ class VllmScheduler(InferenceScheduler):
             remote_pulls,
             finished_cached,
             token_budget,
-            stop_after_remote,
             prefix_hits,
         )
 
@@ -376,7 +395,6 @@ class VllmScheduler(InferenceScheduler):
         tokens_w: dict[int, int] = {}
         blocks_w: dict[int, list[Any]] = {}
         remote_pulls: list[RemoteKvPull] = []
-        stop_after_remote = False
         newly: list[InferenceRequest] = []
         finished_cached: list[InferenceRequest] = []
         prefix_hits: dict[int, int] = {}
@@ -391,7 +409,6 @@ class VllmScheduler(InferenceScheduler):
                 remote_pulls,
                 finished_cached,
                 budget,
-                stop_after_remote,
                 prefix_hits,
             ) = await self.process_wait_queue(
                 waiting,
@@ -416,7 +433,6 @@ class VllmScheduler(InferenceScheduler):
             remote_pulls=remote_pulls,
             preempted=preempted,
             finished_cached=finished_cached,
-            stop_after_remote=stop_after_remote,
             prefix_hits=prefix_hits,
         )
 

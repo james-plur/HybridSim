@@ -110,7 +110,7 @@ def main() -> None:
     for req in finished:
         params = req.kv_transfer_params or {}
         print(
-            f"  req={req.request_id} computed={req.num_computed_tokens}/"
+            f"req={req.request_id} computed={req.num_computed_tokens}/"
             f"{req.num_tokens_with_output} completed={req.completed} "
             f"xfer={params.get('transfer_id', '')} "
             f"do_remote_prefill={bool(params.get('do_remote_prefill'))} "

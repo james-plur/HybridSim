@@ -48,6 +48,7 @@ _EXPECTED_IDS = {
     "llama-3.1-8b",
     "llama-3.1-70b",
     "llama-3.3-70b",
+    "qwen-32b",
 }
 
 
@@ -59,6 +60,7 @@ class TestModelPresets(unittest.TestCase):
         self.assertEqual(len(list_presets(family="glm")), 3)
         self.assertEqual(len(list_presets(family="kimi")), 2)
         self.assertEqual(len(list_presets(family="llama")), 3)
+        self.assertEqual(len(list_presets(family="qwen")), 1)
 
     def test_load_preset_fields_match_yaml(self) -> None:
         for pid in sorted(_EXPECTED_IDS):

@@ -73,7 +73,7 @@ class ReplicaActor(ActorBase):
         self._cluster = cluster
         self._engine = engine
         self._profile = profile
-        self._step_interval = float(step_interval)
+        self._step_interval = float(step_interval)  # unused; event-driven steps
         self._dummy_exec_s = float(dummy_exec_s)
         self._max_num_scheduled_tokens = int(max_num_scheduled_tokens)
         self._max_num_running_reqs = int(max_num_running_reqs)
@@ -108,6 +108,8 @@ class ReplicaActor(ActorBase):
         self._next_batch_id = 1
         self._next_workload_id = 1
         self._step_armed = False
+        #: Set when schedule hits a hard KV contention freeze (async raise may be swallowed).
+        self._schedule_error: Optional[BaseException] = None
 
         if engine is None:
             raise ValueError("ReplicaActor requires an EngineActor")
@@ -164,26 +166,59 @@ class ReplicaActor(ActorBase):
         super().start()
         self._engine.start()
         self._kv.start_client()
-        self._arm_step()
+        # First RequestMsg / I/O completion arms the step loop.
 
     def check_error(self) -> None:
+        if self._schedule_error is not None:
+            raise self._schedule_error
         super().check_error()
         self._engine.check_error()
         self._kv.check_client_error()
 
     def _arm_step(self) -> None:
-        if self._step_armed:
+        """Debounce: at most one pending StepMsg. Worker-full waits for BatchEnd."""
+        if self._step_armed or not self._worker.can_submit():
             return
         self._step_armed = True
         self.send(StepMsg)
 
-    def _has_work(self) -> bool:
-        return bool(
-            self.waiting
-            or self.running
-            or self._worker.num_inflight
-            or self._kv.client_busy
+    def _has_future_schedule_wakeup(self) -> bool:
+        """True if BatchEnd / KVTransferEnd / LookupReply will re-arm a step."""
+        if self._worker.num_inflight > 0:
+            return True
+        if int(getattr(self._kv, "pending_kv_pull_count", 0) or 0) > 0:
+            return True
+        if any(bool(getattr(r, "pending_lookup", False)) for r in self.waiting):
+            return True
+        return False
+
+    def _raise_kv_contention_deadlock(self) -> None:
+        """WAITING holds KV pages but schedule cannot admit; no inflight I/O to free them.
+
+        Same class of scheduler freeze as vLLM V1 (Running:0 / Waiting:N with blocks
+        held by parked or waiting requests and an unschedulable FCFS head). Continuous
+        schedule() polling cannot resolve it without preempting WAITING holders.
+        """
+        statuses: dict[str, int] = {}
+        for req in self.waiting:
+            key = str(getattr(req.status, "name", req.status))
+            statuses[key] = statuses.get(key, 0) + 1
+        allocated = getattr(self._kv, "allocated", {}) or {}
+        free_blocks = getattr(self._kv, "free_blocks", None)
+        err = RuntimeError(
+            "KV cache contention deadlock: schedule() admitted no GPU batch and no "
+            "remote KV pull while waiting requests remain, and there is no in-flight "
+            "BatchEnd / KVTransferEnd / LookupReply that could free blocks. "
+            "Waiting requests may already hold GPU pages (APC attach or completed "
+            "pull) that block FCFS admission — the same freeze class reported in "
+            f"vLLM V1 (e.g. Running:0 Waiting:N). "
+            f"replica={self.replica_id} n_waiting={len(self.waiting)} "
+            f"n_running={len(self.running)} waiting_status={statuses!r} "
+            f"free_blocks={free_blocks} allocated_reqs={len(allocated)} "
+            f"sim_now={float(self.sim.now()):.6g}"
         )
+        self._schedule_error = err
+        raise err
 
     def _on_worker_complete(
         self, workload_id: int, schedule_batch: Optional[Any]
@@ -251,87 +286,93 @@ class ReplicaActor(ActorBase):
     @on(StepMsg)
     async def on_step(self, _actor, msg: StepMsg) -> None:
         self._step_armed = False
+        # Worker full: BatchEnd will wake us. Do not same-tick no-op.
+        if not self._worker.can_submit():
+            return
 
-        # One schedule step → at most one batch; gate on Worker inflight depth.
-        if self._worker.can_submit():
-            blocked = self._worker.inflight_request_ids()
-            waiting = [r for r in self.waiting if r.request_id not in blocked]
-            running_held = [r for r in self.running if r.request_id in blocked]
-            running_ready = [
-                r for r in self.running if r.request_id not in blocked
-            ]
+        blocked = self._worker.inflight_request_ids()
+        waiting = [r for r in self.waiting if r.request_id not in blocked]
+        running_held = [r for r in self.running if r.request_id in blocked]
+        running_ready = [
+            r for r in self.running if r.request_id not in blocked
+        ]
 
-            remote_lookup = (
-                self._kv.remote_lookup if self._kv.remote_enabled else None
+        remote_lookup = (
+            self._kv.remote_lookup if self._kv.remote_enabled else None
+        )
+        sched_t0 = float(self.sim.now())
+        result = await self._scheduler.schedule_step(
+            waiting,
+            running_ready,
+            kv_cache_manager=self._kv,
+            batch_id=self._next_batch_id,
+            token_budget=self._max_num_scheduled_tokens,
+            max_num_running_reqs=self._max_num_running_reqs,
+            remote_lookup=remote_lookup,
+        )
+        # Preserve requests still executing on the Worker.
+        self.waiting = result.waiting
+        self.running = running_held + result.running
+
+        batch_req_ids: list[int] = []
+        if result.batch is not None:
+            batch_req_ids = [int(r.request_id) for r in result.batch.requests]
+        if self._profile is not None:
+            self._profile.emit_replica_schedule(
+                time_s=sched_t0,
+                replica_id=self.replica_id,
+                batch_id=(
+                    int(result.batch.batch_id)
+                    if result.batch is not None
+                    else None
+                ),
+                request_ids=batch_req_ids or None,
             )
-            sched_t0 = float(self.sim.now())
-            result = await self._scheduler.schedule_step(
-                waiting,
-                running_ready,
-                kv_cache_manager=self._kv,
-                batch_id=self._next_batch_id,
-                token_budget=self._max_num_scheduled_tokens,
-                max_num_running_reqs=self._max_num_running_reqs,
-                remote_lookup=remote_lookup,
-            )
-            # Preserve requests still executing on the Worker.
-            self.waiting = result.waiting
-            self.running = running_held + result.running
 
-            batch_req_ids: list[int] = []
-            if result.batch is not None:
-                batch_req_ids = [int(r.request_id) for r in result.batch.requests]
-            if self._profile is not None:
-                self._profile.emit_replica_schedule(
-                    time_s=sched_t0,
-                    replica_id=self.replica_id,
-                    batch_id=(
-                        int(result.batch.batch_id)
-                        if result.batch is not None
-                        else None
-                    ),
-                    request_ids=batch_req_ids or None,
+        if result.finished_cached and self._cluster is not None:
+            for req in result.finished_cached:
+                if self._maybe_handoff_prefill(req):
+                    continue
+                self._cluster.send(
+                    RequestFinishMsg, request=req, replica_id=self.replica_id
                 )
 
-            if result.finished_cached and self._cluster is not None:
-                for req in result.finished_cached:
-                    if self._maybe_handoff_prefill(req):
-                        continue
-                    self._cluster.send(
-                        RequestFinishMsg, request=req, replica_id=self.replica_id
+        if result.remote_pulls:
+            self._kv.submit_remote_pulls(result.remote_pulls)
+
+        if result.batch is not None:
+            self._next_batch_id += 1
+            wid = self._next_workload_id
+            self._next_workload_id += 1
+            workload = self._workload_generator(result.batch, workload_id=wid)
+            engine_start = float(self.sim.now())
+            kernels = workload.get("kernels") or []
+            duration_s = float(kernels[0].get("duration", 0.0)) if kernels else 0.0
+            if self._profile is not None:
+                for req in result.batch.requests:
+                    self._profile.emit_engine_req(
+                        start_s=engine_start,
+                        duration_s=duration_s,
+                        replica_id=self.replica_id,
+                        request_id=int(req.request_id),
+                        workload_id=wid,
+                        batch_id=int(result.batch.batch_id),
+                        request=req,
                     )
+            self._worker.submit(workload, result.batch)
 
-            if result.remote_pulls:
-                self._kv.submit_remote_pulls(result.remote_pulls)
-
-            if result.batch is not None:
-                self._next_batch_id += 1
-                wid = self._next_workload_id
-                self._next_workload_id += 1
-                workload = self._workload_generator(result.batch, workload_id=wid)
-                engine_start = float(self.sim.now())
-                kernels = workload.get("kernels") or []
-                duration_s = float(kernels[0].get("duration", 0.0)) if kernels else 0.0
-                if self._profile is not None:
-                    for req in result.batch.requests:
-                        self._profile.emit_engine_req(
-                            start_s=engine_start,
-                            duration_s=duration_s,
-                            replica_id=self.replica_id,
-                            request_id=int(req.request_id),
-                            workload_id=wid,
-                            batch_id=int(result.batch.batch_id),
-                            request=req,
-                        )
-                self._worker.submit(workload, result.batch)
-
-        # Poll at step_interval only while the worker can accept another batch
-        # (chunked prefill / max_inflight > 1, or a retry while idle). When the
-        # engine is full, leave _step_armed false so BatchEnd / KVTransferEnd /
-        # RequestMsg can _arm_step() immediately instead of spinning empty ticks.
-        if self._has_work() and self._worker.can_submit():
-            self._step_armed = True
-            self.send(StepMsg, delay=self._step_interval)
+        # Only re-arm when nothing else will: cached-finish has no I/O; preempt
+        # skips Phase 2 and must match "schedule again immediately".
+        # Batch / remote pull are woken by BatchEnd / KVTransferEnd.
+        if result.finished_cached or result.preempted:
+            self._arm_step()
+        elif (
+            self.waiting
+            and result.batch is None
+            and not result.remote_pulls
+            and not self._has_future_schedule_wakeup()
+        ):
+            self._raise_kv_contention_deadlock()
 
     @on(BatchEndMsg)
     async def on_batch_end(self, _actor, msg: BatchEndMsg) -> None:
