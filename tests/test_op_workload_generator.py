@@ -1,4 +1,4 @@
-"""Unit tests for analytical OpWorkloadGenerator / OpAnalyzer (RF-aligned)."""
+"""Unit tests for OpLevelWorkloadGenerator / AnalyticAnalyzer (RF-aligned)."""
 
 from __future__ import annotations
 
@@ -14,42 +14,47 @@ if str(_PY) not in sys.path:
 from hybridsim_infer.request import InferenceRequest
 from hybridsim_infer.schedule_types import DecodeChunk, PrefillChunk, ScheduleBatch
 from hybridsim_infer.workload_generators import (
-    OpWorkloadGenerator,
+    OpLevelWorkloadGenerator,
     extract_batch_features,
-    make_workload_generator,
+    make_infer_workload_generator,
 )
-from hybridsim_infer.workload_generators.analytic_model import (
-    AnalyticalConfig,
-    AttnVariant,
-    BatchPhase,
+from hybridsim_infer.workload_generators.configs import (
     DeviceConfig,
-    FfnActivation,
     ModelConfig,
     NetworkConfig,
-    OperatorKind,
+    OpLevelConfig,
     ParallelConfig,
-    TpCommStyle,
-    build_operator_dag,
+)
+from hybridsim_infer.workload_generators.infer_workload_generator.batch_features import (
+    BatchPhase,
+)
+from hybridsim_infer.workload_generators.infer_workload_generator.op_level.analytic.analyzer import (
     critical_path_duration_s,
-    expected_layer_op_names,
-    strip_layer_prefix,
     total_kernel_duration_s,
 )
-from hybridsim_infer.workload_generators.analytic_model.models.ab_comm import (
+from hybridsim_infer.workload_generators.infer_workload_generator.op_level.analytic.models.ab_comm import (
     ab_comm_time_s,
 )
-from hybridsim_infer.workload_generators.analytic_model.models.roofline import (
+from hybridsim_infer.workload_generators.infer_workload_generator.op_level.analytic.models.roofline import (
     roofline_time_s,
 )
-from hybridsim_infer.workload_generators.analytic_model.operators.attention import (
-    ensure_attn_variant_supported,
-)
-from hybridsim_infer.workload_generators.analytic_model.rf_catalog import (
+from hybridsim_infer.workload_generators.infer_workload_generator.op_level.mock.comm_names import (
     COMM_ATTN_TP_ALLREDUCE,
     COMM_EP_COMBINE,
     COMM_EP_DISPATCH,
     COMM_MLP_TP_ALLREDUCE,
     COMM_PP_SEND_RECV,
+)
+from hybridsim_infer.workload_generators.types import (
+    AttnVariant,
+    FfnActivation,
+    ensure_attn_variant_supported,
+)
+from hybridsim_infer.workload_generators.infer_workload_generator.op_level.mock.models.expect import (
+    expected_layer_primitives,
+)
+from hybridsim_infer.workload_generators.infer_workload_generator.op_level.mock.models.transformer import (
+    build_operator_dag,
 )
 
 
@@ -169,44 +174,44 @@ class TestRooflineAndAB(unittest.TestCase):
         )
 
 
-class TestRfAlignedDAG(unittest.TestCase):
-    def test_dense_prefill_layer_matches_catalog(self) -> None:
-        cfg = AnalyticalConfig(
+class TestPrimitiveDAG(unittest.TestCase):
+    def test_dense_prefill_layer_matches_primitives(self) -> None:
+        cfg = OpLevelConfig(
             model=ModelConfig(num_layers=1, attn_variant=AttnVariant.GQA),
             parallel=ParallelConfig(),
         )
         feats = extract_batch_features(_prefill_batch())
         dag = build_operator_dag(model=cfg.model, parallel=cfg.parallel, batch=feats)
-        got = dag.rf_op_names()
-        expect = expected_layer_op_names(
+        expect = expected_layer_primitives(
             attn_variant=AttnVariant.GQA,
             phase=BatchPhase.PREFILL,
             is_moe=False,
+            num_prefill=1,
         )
-        self.assertEqual(got, expect)
+        self.assertEqual(dag.op_names(), expect)
 
-    def test_dense_tp_inserts_frontier_allreduce_names(self) -> None:
-        cfg = AnalyticalConfig(
+    def test_dense_tp_inserts_allreduce_names(self) -> None:
+        cfg = OpLevelConfig(
             model=ModelConfig(num_layers=1),
             parallel=ParallelConfig(tp_size=4),
         )
         feats = extract_batch_features(_prefill_batch())
         dag = build_operator_dag(model=cfg.model, parallel=cfg.parallel, batch=feats)
-        names = dag.rf_op_names()
+        names = dag.op_names()
         self.assertIn(COMM_ATTN_TP_ALLREDUCE, names)
         self.assertIn(COMM_MLP_TP_ALLREDUCE, names)
 
-    def test_pp_uses_frontier_send_recv_name(self) -> None:
-        cfg = AnalyticalConfig(
+    def test_pp_uses_send_recv_name(self) -> None:
+        cfg = OpLevelConfig(
             model=ModelConfig(num_layers=4),
             parallel=ParallelConfig(pp_size=2, pp_stage=0),
         )
         feats = extract_batch_features(_prefill_batch())
         dag = build_operator_dag(model=cfg.model, parallel=cfg.parallel, batch=feats)
-        self.assertIn(COMM_PP_SEND_RECV, dag.rf_op_names())
+        self.assertIn(COMM_PP_SEND_RECV, dag.op_names())
 
-    def test_moe_ep_matches_catalog(self) -> None:
-        cfg = AnalyticalConfig(
+    def test_moe_ep_matches_primitives(self) -> None:
+        cfg = OpLevelConfig(
             model=ModelConfig(
                 num_layers=1,
                 is_moe=True,
@@ -218,7 +223,7 @@ class TestRfAlignedDAG(unittest.TestCase):
         )
         feats = extract_batch_features(_prefill_batch())
         dag = build_operator_dag(model=cfg.model, parallel=cfg.parallel, batch=feats)
-        expect = expected_layer_op_names(
+        expect = expected_layer_primitives(
             attn_variant=cfg.model.resolved_attn_variant(),
             phase=BatchPhase.PREFILL,
             is_moe=True,
@@ -226,54 +231,48 @@ class TestRfAlignedDAG(unittest.TestCase):
             attn_tp=2,
             moe_tp=2,
             ep=4,
+            num_prefill=1,
         )
-        self.assertEqual(dag.rf_op_names(), expect)
-        self.assertIn(COMM_EP_DISPATCH, dag.rf_op_names())
-        self.assertIn(COMM_EP_COMBINE, dag.rf_op_names())
+        self.assertEqual(dag.op_names(), expect)
+        self.assertIn(COMM_EP_DISPATCH, dag.op_names())
+        self.assertIn(COMM_EP_COMBINE, dag.op_names())
 
     def test_mla_prefill_ops(self) -> None:
-        cfg = AnalyticalConfig(
+        cfg = OpLevelConfig(
             model=ModelConfig(num_layers=1, attn_variant=AttnVariant.MLA),
             parallel=ParallelConfig(),
         )
         feats = extract_batch_features(_prefill_batch())
         dag = build_operator_dag(model=cfg.model, parallel=cfg.parallel, batch=feats)
-        expect = expected_layer_op_names(
+        expect = expected_layer_primitives(
             attn_variant=AttnVariant.MLA,
             phase=BatchPhase.PREFILL,
+            num_prefill=1,
         )
-        self.assertEqual(dag.rf_op_names(), expect)
-
-    def test_legacy_rs_ag_style_still_builds(self) -> None:
-        # RS/AG remains available via ParallelConfig; default dag uses allreduce.
-        cfg = AnalyticalConfig(
-            model=ModelConfig(num_layers=1),
-            parallel=ParallelConfig(tp_size=2, tp_comm_style=TpCommStyle.RS_AG),
-        )
-        feats = extract_batch_features(_prefill_batch())
-        # RF-aligned builder always uses allreduce for TP; style reserved for legacy helper.
-        dag = build_operator_dag(model=cfg.model, parallel=cfg.parallel, batch=feats)
-        self.assertIn(COMM_ATTN_TP_ALLREDUCE, dag.rf_op_names())
+        self.assertEqual(dag.op_names(), expect)
 
 
 class TestOpAnalyzerExpand(unittest.TestCase):
     def test_ffn_ops_are_separate_kernels(self) -> None:
-        gen = OpWorkloadGenerator(
-            analytical=AnalyticalConfig(model=ModelConfig(num_layers=1)),
+        gen = OpLevelWorkloadGenerator(
+            op_level=OpLevelConfig(model=ModelConfig(num_layers=1)),
         )
         wl = gen(_prefill_batch(), workload_id=9)
         _validate_dag(wl["kernels"])
-        names = [strip_layer_prefix(k["name"]) for k in wl["kernels"]]
-        for op in ("mlp_up_proj", "mlp_act", "mlp_down_proj"):
+        names = [
+            k["name"].split(".", 1)[1] if "." in k["name"] else k["name"]
+            for k in wl["kernels"]
+        ]
+        for op in ("gemm_up", "mlp_act", "gemm_down"):
             self.assertIn(op, names)
-        up = next(k for k in wl["kernels"] if k["name"].endswith("mlp_up_proj"))
+        up = next(k for k in wl["kernels"] if k["name"].endswith("gemm_up"))
         act = next(k for k in wl["kernels"] if k["name"].endswith("mlp_act"))
-        down = next(k for k in wl["kernels"] if k["name"].endswith("mlp_down_proj"))
+        down = next(k for k in wl["kernels"] if k["name"].endswith("gemm_down"))
         self.assertIn(wl["kernels"].index(up), act["dependencies"])
         self.assertIn(wl["kernels"].index(act), down["dependencies"])
 
     def test_durations_positive(self) -> None:
-        wl = make_workload_generator(duration_mode="analytical")(
+        wl = make_infer_workload_generator(duration_mode="op_level")(
             _prefill_batch(), workload_id=1
         )
         self.assertTrue(all(k["duration"] >= 0.0 for k in wl["kernels"]))
@@ -289,10 +288,10 @@ class TestVariants(unittest.TestCase):
             AttnVariant.MQA,
             AttnVariant.MLA,
         ):
-            cfg = AnalyticalConfig(
+            cfg = OpLevelConfig(
                 model=ModelConfig(num_layers=1, attn_variant=variant)
             )
-            wl = OpWorkloadGenerator(analytical=cfg)(_prefill_batch(), workload_id=1)
+            wl = OpLevelWorkloadGenerator(op_level=cfg)(_prefill_batch(), workload_id=1)
             self.assertGreater(len(wl["kernels"]), 0)
 
     def test_ffn_activations(self) -> None:
@@ -302,10 +301,10 @@ class TestVariants(unittest.TestCase):
             FfnActivation.SWIGLU,
             FfnActivation.RELU,
         ):
-            cfg = AnalyticalConfig(
+            cfg = OpLevelConfig(
                 model=ModelConfig(num_layers=1, ffn_activation=act)
             )
-            wl = OpWorkloadGenerator(analytical=cfg)(_prefill_batch(), workload_id=1)
+            wl = OpLevelWorkloadGenerator(op_level=cfg)(_prefill_batch(), workload_id=1)
             self.assertGreater(len(wl["kernels"]), 0)
 
     def test_stub_variants_raise(self) -> None:
@@ -316,11 +315,10 @@ class TestVariants(unittest.TestCase):
         ensure_attn_variant_supported(AttnVariant.DSA)
 
 
-class TestFactoryAnalytical(unittest.TestCase):
-    def test_factory_mode_aliases(self) -> None:
-        for mode in ("analytical", "analytic", "op", "kernel_dag"):
-            gen = make_workload_generator(duration_mode=mode)
-            self.assertIsInstance(gen, OpWorkloadGenerator)
+class TestFactoryOpLevel(unittest.TestCase):
+    def test_factory_op_level(self) -> None:
+        gen = make_infer_workload_generator(duration_mode="op_level")
+        self.assertIsInstance(gen, OpLevelWorkloadGenerator)
 
 
 if __name__ == "__main__":

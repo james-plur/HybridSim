@@ -12,35 +12,35 @@ from hybridsim_infer.request_generators import (
     map_servegen_request,
 )
 from hybridsim_infer.workload_generators import (
+    BatchLevelWorkloadGenerator,
     FixedDurationPredictor,
-    OpWorkloadGenerator,
-    PredictWorkloadGenerator,
+    InferWorkloadGenerator,
+    OpLevelWorkloadGenerator,
     TokenProportionalPredictor,
-    WorkloadGenerator,
+    make_infer_workload_generator,
     make_predictor,
-    make_workload_generator,
 )
 
 __all__ = [
     "SchedulerFactory",
     "INFER_MESSAGE_TYPES",
+    "BatchLevelWorkloadGenerator",
     "FixedDurationPredictor",
     "InferenceConfig",
     "InferenceScheduler",
     "InferenceRequest",
     "InferenceSimulation",
+    "InferWorkloadGenerator",
     "ListRequestGenerator",
-    "OpWorkloadGenerator",
-    "PredictWorkloadGenerator",
+    "OpLevelWorkloadGenerator",
     "RequestGenerator",
     "RequestStatus",
     "ServeGenRequestGenerator",
     "TokenProportionalPredictor",
     "VllmScheduler",
-    "WorkloadGenerator",
     "build_inference_simulation",
+    "make_infer_workload_generator",
     "make_predictor",
-    "make_workload_generator",
     "map_servegen_request",
 ]
 

@@ -36,7 +36,7 @@ FAMILY_DIR = {
 REPO_ROOT = Path(__file__).resolve().parents[1]
 OUT_ROOT = (
     REPO_ROOT
-    / "src/python/hybridsim_infer/workload_generators/analytic_model/model_presets"
+    / "src/python/hybridsim_infer/workload_generators/model_presets"
 )
 
 

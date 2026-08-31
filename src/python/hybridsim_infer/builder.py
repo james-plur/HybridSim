@@ -67,14 +67,14 @@ class InferenceSimulation:
         return getattr(self.profile, "output_path", None)
 
 
-def _resolve_analytical_config(config: InferenceConfig) -> Any:
-    """Inject ``model_preset`` into AnalyticalConfig (shared with all duration modes)."""
+def _resolve_op_level_config(config: InferenceConfig) -> Any:
+    """Inject ``model_preset`` into OpLevelConfig (shared with all duration modes)."""
     from hybridsim_infer.workload_generators.model_config_resolve import (
-        resolve_analytical_config,
+        resolve_op_level_config,
     )
 
-    return resolve_analytical_config(
-        analytical_config=getattr(config, "analytical_config", None),
+    return resolve_op_level_config(
+        op_level_config=getattr(config, "op_level_config", None),
         model_preset=getattr(config, "model_preset", None),
     )
 
@@ -100,7 +100,7 @@ def build_inference_simulation(
     else:
         manager = MonolithClusterManager()
 
-    analytical_config = _resolve_analytical_config(config)
+    op_level_config = _resolve_op_level_config(config)
 
     profile = create_request_profile_session(
         enabled=bool(getattr(config, "enable_request_profile", False)),
@@ -171,6 +171,7 @@ def build_inference_simulation(
             max_num_running_reqs=config.max_num_running_reqs,
             max_inflight_batches=config.max_inflight_batches,
             duration_mode=config.duration_mode,
+            batch_predictor=getattr(config, "batch_predictor", "fixed"),
             prefill_s_per_token=config.prefill_s_per_token,
             decode_s_per_token=config.decode_s_per_token,
             duration_base_s=config.duration_base_s,
@@ -178,7 +179,7 @@ def build_inference_simulation(
             frontier_cluster_type=getattr(config, "frontier_cluster_type", None),
             frontier_replica_id=int(getattr(config, "frontier_replica_id", 0) or 0),
             frontier_is_moe=bool(getattr(config, "frontier_is_moe", False)),
-            analytical_config=analytical_config,
+            op_level_config=op_level_config,
             profile=profile_arg,
         )
         replicas.append(replica)

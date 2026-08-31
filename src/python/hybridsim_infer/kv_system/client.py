@@ -12,16 +12,17 @@ from hybridsim_infer.kv_system.block_keys import (
     store_block_factor,
 )
 from hybridsim_infer.messages import KVLookupMsg, KVLookupReplyMsg, KVUpdateMsg
-from hybridsim_infer.workload_generators.analytic_model.configs import (
+from hybridsim_infer.workload_generators.configs import (
     ModelConfig,
     NetworkConfig,
 )
-from hybridsim_infer.workload_generators.analytic_model.kv_cache import (
+from hybridsim_infer.workload_generators.kv_cache import (
     bytes_per_token as model_bytes_per_token,
     resolve_model,
 )
-from hybridsim_infer.workload_generators.kv_transfer import (
-    KvTransferWorkloadGenerator,
+from hybridsim_infer.workload_generators.factory import make_kv_workload_generator
+from hybridsim_infer.workload_generators.kv_workload_generator import (
+    KvWorkloadGenerator,
     transfer_duration_s,
 )
 
@@ -51,7 +52,7 @@ class KvClient:
         kv_latency_s: float = 0.0,
         lookup_rtt_s: float = 1e-3,
         on_transfer_complete: Callable[[int, int, str], None],
-        workload_generator: Optional[KvTransferWorkloadGenerator] = None,
+        workload_generator: Optional[KvWorkloadGenerator] = None,
         model_config: Optional[ModelConfig | str] = None,
         network_config: Optional[NetworkConfig] = None,
         profile: Any = None,
@@ -86,7 +87,7 @@ class KvClient:
                     latency_s=kv_latency_s,
                     bandwidth_gbps=bandwidth_gbps,
                 )
-            self._workload_generator = KvTransferWorkloadGenerator(
+            self._workload_generator = make_kv_workload_generator(
                 model=model_config,
                 network=net,
                 bytes_per_token=bytes_per_token,

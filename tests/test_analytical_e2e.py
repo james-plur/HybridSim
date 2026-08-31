@@ -1,4 +1,4 @@
-"""End-to-end: analytical duration_mode + model_preset through simulation."""
+"""End-to-end: op_level duration_mode + model_preset through simulation."""
 
 from __future__ import annotations
 
@@ -17,46 +17,45 @@ from hybridsim_infer import (
     build_inference_simulation,
 )
 from hybridsim_infer.workload_generators import (
-    OpWorkloadGenerator,
-    make_workload_generator,
+    OpLevelWorkloadGenerator,
+    make_infer_workload_generator,
 )
 from hybridsim_infer.workload_generators.model_config_resolve import (
-    resolve_analytical_config,
+    resolve_op_level_config,
 )
 
 
 class TestSharedModelPreset(unittest.TestCase):
     def test_resolve_injects_preset_model(self) -> None:
-        cfg = resolve_analytical_config(model_preset="llama-3.1-8b")
+        cfg = resolve_op_level_config(model_preset="llama-3.1-8b")
         self.assertIsNotNone(cfg)
         self.assertGreater(int(cfg.model.num_layers), 1)
         self.assertEqual(int(cfg.model.hidden_size), 4096)
 
-    def test_factory_analytical_uses_preset(self) -> None:
-        gen = make_workload_generator(
-            duration_mode="analytical",
+    def test_factory_op_level_uses_preset(self) -> None:
+        gen = make_infer_workload_generator(
+            duration_mode="op_level",
             model_preset="llama-3.1-8b",
         )
-        self.assertIsInstance(gen, OpWorkloadGenerator)
+        self.assertIsInstance(gen, OpLevelWorkloadGenerator)
         self.assertEqual(int(gen.config.model.hidden_size), 4096)
 
 
-class TestAnalyticalE2E(unittest.TestCase):
-    def test_analytical_preset_simulation_completes(self) -> None:
+class TestOpLevelE2E(unittest.TestCase):
+    def test_op_level_preset_simulation_completes(self) -> None:
         cfg = InferenceConfig(
             num_replicas=1,
             step_interval=1e-3,
-            duration_mode="analytical",
+            duration_mode="op_level",
             model_preset="llama-3.1-8b",
             tokens_per_step=8,
             decode_tokens_per_step=1,
             max_num_scheduled_tokens=64,
         )
-        # Shrink layers for fast e2e while keeping preset shapes otherwise.
-        analytical = resolve_analytical_config(model_preset="llama-3.1-8b")
-        analytical.model.num_layers = 2
-        cfg.analytical_config = analytical
-        cfg.model_preset = None  # already injected
+        op_level = resolve_op_level_config(model_preset="llama-3.1-8b")
+        op_level.model.num_layers = 2
+        cfg.op_level_config = op_level
+        cfg.model_preset = None
 
         infra = build_inference_simulation(cfg)
         req = InferenceRequest(
@@ -71,14 +70,14 @@ class TestAnalyticalE2E(unittest.TestCase):
         self.assertEqual(len(infra.finished_requests), 1)
         self.assertTrue(infra.finished_requests[0].completed)
 
-    def test_analytical_with_prefix_caching(self) -> None:
-        analytical = resolve_analytical_config(model_preset="llama-3.1-8b")
-        analytical.model.num_layers = 2
+    def test_op_level_with_prefix_caching(self) -> None:
+        op_level = resolve_op_level_config(model_preset="llama-3.1-8b")
+        op_level.model.num_layers = 2
         cfg = InferenceConfig(
             num_replicas=1,
             step_interval=1e-3,
-            duration_mode="analytical",
-            analytical_config=analytical,
+            duration_mode="op_level",
+            op_level_config=op_level,
             enable_prefix_caching=True,
             block_size=8,
             num_gpu_blocks=128,

@@ -13,7 +13,7 @@
 |------|------|------|----------------|
 | `request_id` | `int` | 生成器 / 手写 | 请求唯一标识。贯穿 Cluster 派发、Replica 队列、Engine 事件、request profile 元数据。 |
 | `arrived_at` | `float` | 生成器 / 手写 | DES 到达时刻（秒）。`ClusterScheduler.schedule_arrivals` 用它 `send_at`，决定请求何时进入集群调度。 |
-| `num_prefill_tokens` | `int` | 生成器 / 手写 | Prompt 长度。决定 prefill 阶段要算多少 token；与 `num_computed_tokens` 比较可判断是否仍在 prefill（`is_prefill_chunk`）。WorkloadGenerator / analytical 计时也依赖本步实际 prefill chunk 长度。 |
+| `num_prefill_tokens` | `int` | 生成器 / 手写 | Prompt 长度。决定 prefill 阶段要算多少 token；与 `num_computed_tokens` 比较可判断是否仍在 prefill（`is_prefill_chunk`）。InferWorkloadGenerator / op-level 计时也依赖本步实际 prefill chunk 长度。 |
 | `num_decode_tokens` | `int` | 生成器 / 手写 | 目标输出长度。与 prefill 一起构成请求总工作量；`is_finished()` 要求 `num_computed_tokens >= prefill + decode`。 |
 | `num_computed_tokens` | `int` | **运行时**（生成时通常 0） | 已计算 token 数。本地 APC / Store 命中后会抬高，从而缩小本步要算的 chunk；调度、KV 拉取、analytical attention（`cached + chunk`）都读它。 |
 | `num_output_tokens` | `int` | **运行时**（生成时通常 0） | 已采样输出长度。抢占后仍保留，用于 admit / `num_tokens`（对齐 vLLM「当前序列长度 = prompt + 已输出」）。 |
@@ -108,7 +108,7 @@ sim.schedule_from_generator(gen)
 
 可选依赖：`pip install -e <ServeGen克隆>` 或 `pip install -e ".[servegen]"`。示例：`examples/inference/servegen_demo.py`。
 
-ServeGen 在本项目中 **只做请求到达/长度**，不做 GPU 时长；时长仍由 `WorkloadGenerator`（fixed / predict / analytical）决定。
+ServeGen 在本项目中 **只做请求到达/长度**，不做 GPU 时长；时长仍由 `InferWorkloadGenerator`（batch_level / op_level）决定。
 
 ### 2.3 KV Cache Trace：真实前缀共享结构
 

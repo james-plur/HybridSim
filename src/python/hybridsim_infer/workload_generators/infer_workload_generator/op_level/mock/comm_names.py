@@ -1,0 +1,10 @@
+"""Debug names for mock CommOp nodes (not used for costing)."""
+
+COMM_ATTN_TP_ALLREDUCE = "attn_tensor_parallel_allreduce"
+COMM_MLP_TP_ALLREDUCE = "mlp_tensor_parallel_allreduce"
+COMM_MOE_TP_ALLREDUCE = "moe_tensor_parallel_allreduce"
+COMM_MOE_TP_ALLGATHER = "moe_tensor_parallel_allgather"
+COMM_SHARE_EXPERT_TP_ALLREDUCE = "share_expert_tensor_parallel_allreduce"
+COMM_EP_DISPATCH = "expert_parallel_alltoall_dispatch"
+COMM_EP_COMBINE = "expert_parallel_alltoall_combine"
+COMM_PP_SEND_RECV = "pipeline_parallel_send_recv"

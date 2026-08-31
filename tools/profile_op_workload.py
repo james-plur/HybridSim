@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CLI: export analytical Op DAG as Chrome Trace JSON (Perfetto / chrome://tracing).
+"""CLI: export op-level DAG as Chrome Trace JSON (Perfetto / chrome://tracing).
 
 Example:
   PYTHONPATH=src/python python tools/profile_op_workload.py \\
@@ -19,23 +19,26 @@ _PY = _ROOT / "src" / "python"
 if str(_PY) not in sys.path:
     sys.path.insert(0, str(_PY))
 
-from hybridsim_infer.workload_generators.analytic_model.configs import (  # noqa: E402
-    AnalyticalConfig,
+from hybridsim_infer.workload_generators.configs import (  # noqa: E402
+    OpLevelConfig,
     ParallelConfig,
 )
-from hybridsim_infer.workload_generators.analytic_model.dag_profile import (  # noqa: E402
+from hybridsim_infer.workload_generators.infer_workload_generator.batch_features import (  # noqa: E402
+    extract_batch_features,
+)
+from hybridsim_infer.workload_generators.infer_workload_generator.op_level.analytic.dag_profile import (  # noqa: E402
     asap_schedule,
     make_demo_prefill_batch,
     profile_schedule_batch,
     summarize_overlap,
     write_chrome_trace,
+    _analyze_with_features,
+)
+from hybridsim_infer.workload_generators.infer_workload_generator.op_level.generator import (  # noqa: E402
+    OpLevelWorkloadGenerator,
 )
 from hybridsim_infer.workload_generators.model_config_resolve import (  # noqa: E402
-    resolve_analytical_config,
-)
-from hybridsim_infer.workload_generators.op_workload_generator import (  # noqa: E402
-    OpWorkloadGenerator,
-    extract_batch_features,
+    resolve_op_level_config,
 )
 
 
@@ -59,25 +62,19 @@ def main(argv: list[str] | None = None) -> int:
         chunk=args.chunk, cached=args.cached, prompt=args.prompt
     )
     feats = extract_batch_features(batch)
-    cfg = resolve_analytical_config(
-        analytical_config=AnalyticalConfig(
+    cfg = resolve_op_level_config(
+        op_level_config=OpLevelConfig(
             parallel=ParallelConfig(tp_size=max(1, args.tp), pp_size=max(1, args.pp))
         ),
         model_preset=args.preset,
     )
-    # Ensure parallel overrides survive preset resolve (preset only sets model).
     if cfg is not None:
         cfg.parallel = ParallelConfig(tp_size=max(1, args.tp), pp_size=max(1, args.pp))
 
-    trace = profile_schedule_batch(batch, analytical=cfg, model_preset=None)
+    trace = profile_schedule_batch(batch, op_level=cfg, model_preset=None)
     out = write_chrome_trace(trace, args.output)
 
-    gen = OpWorkloadGenerator(analytical=cfg or AnalyticalConfig())
-    # Rebuild schedule for summary without re-resolving preset.
-    from hybridsim_infer.workload_generators.analytic_model.dag_profile import (
-        _analyze_with_features,
-    )
-
+    gen = OpLevelWorkloadGenerator(op_level=cfg or OpLevelConfig())
     scheduled = asap_schedule(_analyze_with_features(gen, batch))
     summary = summarize_overlap(scheduled)
     summary["batch_features"] = {

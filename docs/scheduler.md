@@ -35,7 +35,7 @@ ReplicaActor  waiting / running         ← 实例内部：本步算哪些请求
       │  VllmScheduler.schedule_step
       ▼
 ScheduleBatch                           ← 本步决策结果（chunks + tokens_per_request）
-      │  WorkloadGenerator              ← 不在本文范围：把 batch 变成假执行时长
+      │  InferWorkloadGenerator         ← 不在本文范围：把 batch 变成假执行时长
       ▼
 WorkerEngine → BatchEndMsg
       │  VllmScheduler.on_batch_complete
@@ -55,7 +55,7 @@ WorkerEngine → BatchEndMsg
 | `VllmScheduler.schedule_step` | `Scheduler.schedule()` | 一步调度决策。 |
 | `ScheduleBatch` | `SchedulerOutput`（`num_scheduled_tokens` 等） | 本步要 forward 的 token 图。 |
 | `on_batch_complete` | `update_from_output(ModelRunnerOutput)` | forward 之后推进 computed / 采样 output。 |
-| `WorkloadGenerator` + `WorkerEngine` | GPU `ModelRunner` | 仿真用 TimeoutKernel 代替真实 kernel；对齐测试连这一层都不跑。 |
+| `InferWorkloadGenerator` + `WorkerEngine` | GPU `ModelRunner` | 仿真用 TimeoutKernel 代替真实 kernel；对齐测试连这一层都不跑。 |
 
 `VllmScheduler` **不是**把 vLLM 嵌进仿真器，而是按 vLLM 语义手写的决策模型。对齐测试用真实 `vllm.v1.core.sched.scheduler.Scheduler` 离线跑同一组 case，比对决策序列。
 
@@ -105,7 +105,7 @@ vLLM Engine 内部没有这一层：请求已经在某个进程的 `Scheduler.ad
 1. 若 Worker 已满（`max_inflight_batches`，默认 1），本拍不调度。
 2. 正在 Worker 上执行的请求从 waiting/running 里拆出去，避免同一请求被编进两个 in-flight batch。
 3. `await scheduler.schedule_step(...)`，写回 waiting / running。
-4. 若有 `ScheduleBatch`，`WorkloadGenerator` 生成 kernel → `WorkerEngine.submit`。
+4. 若有 `ScheduleBatch`，`InferWorkloadGenerator` 生成 kernel → `WorkerEngine.submit`。
 5. 若还有活、且 Worker 还能接，延迟 `step_interval` 再发 `StepMsg`。
 
 `BatchEndMsg` 到来后走流程 F（`on_batch_complete`），再 `_arm_step()`。
@@ -216,11 +216,11 @@ KV 容量在调度里只表现为：
 
 得到 `ScheduleBatch(batch_id, chunks, requests, tokens_per_request, req_to_new_blocks)`。
 
-**对照 vLLM**：`SchedulerOutput.num_scheduled_tokens` 是同一张「req → 本步 token 数」表。hybridsim 额外把 prefill/decode 拆成 chunk，方便 WorkloadGenerator 计时。
+**对照 vLLM**：`SchedulerOutput.num_scheduled_tokens` 是同一张「req → 本步 token 数」表。hybridsim 额外把 prefill/decode 拆成 chunk，方便 InferWorkloadGenerator 计时。
 
 **假执行（仿真路径，对齐测试跳过时长）**
 
-`ReplicaActor` 把 batch 交给 `WorkloadGenerator` → `WorkerEngine`。时长与调度决策正交。对齐 harness 不启 Engine，schedule 完立刻 `on_batch_complete`。
+`ReplicaActor` 把 batch 交给 `InferWorkloadGenerator` → `WorkerEngine`。时长与调度决策正交。对齐 harness 不启 Engine，schedule 完立刻 `on_batch_complete`。
 
 **状态推进**（`on_batch_complete` ↔ vLLM `update_from_output`）
 

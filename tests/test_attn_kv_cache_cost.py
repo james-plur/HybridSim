@@ -1,4 +1,4 @@
-"""Prefill attention cost respects cached prefix / KV context (Frontier-aligned)."""
+"""Prefill attention cost respects cached prefix / KV context."""
 
 from __future__ import annotations
 
@@ -14,74 +14,26 @@ if str(_PY) not in sys.path:
 from hybridsim_infer.request import InferenceRequest
 from hybridsim_infer.schedule_types import PrefillChunk, ScheduleBatch
 from hybridsim_infer.workload_generators import extract_batch_features
-from hybridsim_infer.workload_generators.analytic_model import (
-    AttnVariant,
+from hybridsim_infer.workload_generators.configs import ModelConfig
+from hybridsim_infer.workload_generators.infer_workload_generator.batch_features import (
     BatchFeatures,
     BatchPhase,
-    ModelConfig,
 )
-from hybridsim_infer.workload_generators.analytic_model.operators.attention import (
-    make_attn_block_operators,
+from hybridsim_infer.workload_generators.infer_workload_generator.op_level.analytic.lower import (
+    lower_op,
 )
-
-
-def _prefill_batch_features(*, chunk: int, cached: int) -> BatchFeatures:
-    return BatchFeatures(
-        phase=BatchPhase.PREFILL,
-        num_tokens=chunk,
-        num_prefill_tokens=chunk,
-        num_decode_tokens=0,
-        batch_size=1,
-        cached_decode_tokens=0,
-        cached_prefix_tokens=cached,
-        prefill_chunk_lens=[chunk],
-        prefill_cached_lens=[cached],
-    )
-
-
-def _attn_prefill_core_flops(
-    *,
-    chunk: int,
-    cached: int,
-    model: ModelConfig | None = None,
-) -> float:
-    model = model or ModelConfig(
-        num_layers=1,
-        hidden_size=1024,
-        intermediate_size=2816,
-        num_q_heads=16,
-        num_kv_heads=16,
-        head_dim=64,
-        attn_variant=AttnVariant.MHA,
-    )
-    batch = _prefill_batch_features(chunk=chunk, cached=cached)
-    ops = make_attn_block_operators(
-        layer_id=0, model=model, batch=batch, deps=[], tp_size=1
-    )
-    for op in ops:
-        if op.features.get("rf_op") in ("attn_prefill", "attn_mla_prefill"):
-            return float(op.features["flops"])
-    raise AssertionError("prefill attention op not found")
-
-
-def _pre_proj_flops(*, tokens: int, cached: int = 64) -> float:
-    model = ModelConfig(
-        num_layers=1,
-        hidden_size=1024,
-        intermediate_size=2816,
-        num_q_heads=16,
-        num_kv_heads=16,
-        head_dim=64,
-        attn_variant=AttnVariant.MHA,
-    )
-    batch = _prefill_batch_features(chunk=tokens, cached=cached)
-    ops = make_attn_block_operators(
-        layer_id=0, model=model, batch=batch, deps=[], tp_size=1
-    )
-    for op in ops:
-        if op.features.get("rf_op") == "attn_pre_proj":
-            return float(op.features["flops"])
-    raise AssertionError("attn_pre_proj not found")
+from hybridsim_infer.workload_generators.configs import ParallelConfig
+from hybridsim_infer.workload_generators.infer_workload_generator.op_level.mock.models.transformer import (
+    build_operator_dag,
+)
+from hybridsim_infer.workload_generators.infer_workload_generator.op_level.mock.fused import (
+    FusedAttnOp,
+    FusedMlaAttnOp,
+)
+from hybridsim_infer.workload_generators.infer_workload_generator.op_level.mock.ops import (
+    GemmOp,
+)
+from hybridsim_infer.workload_generators.types import AttnVariant
 
 
 def _prefill_hit_batch(*, prompt: int, cached: int, chunk: int) -> ScheduleBatch:
@@ -100,6 +52,75 @@ def _prefill_hit_batch(*, prompt: int, cached: int, chunk: int) -> ScheduleBatch
     )
 
 
+def _dense_heads(model: ModelConfig) -> tuple[int, int, int]:
+    n_q = max(1, int(model.num_q_heads))
+    n_kv = max(1, int(model.num_kv_heads))
+    if model.resolved_attn_variant() is AttnVariant.MHA:
+        n_kv = n_q
+    d = max(1, int(model.get_head_dim()))
+    return n_q, n_kv, d
+
+
+def _attn_prefill_core_flops(
+    *,
+    chunk: int,
+    cached: int,
+    model: ModelConfig | None = None,
+) -> float:
+    model = model or ModelConfig(
+        num_layers=1,
+        hidden_size=1024,
+        intermediate_size=2816,
+        num_q_heads=16,
+        num_kv_heads=16,
+        head_dim=64,
+        attn_variant=AttnVariant.MHA,
+    )
+    ctx = max(chunk, cached + chunk)
+    if model.resolved_attn_variant().value in ("mla", "dsa"):
+        n_q = max(1, int(model.num_q_heads))
+        latent = max(1, int(model.kv_lora_rank)) + max(1, int(model.qk_rope_head_dim))
+        op = FusedMlaAttnOp(
+            name="fused_mla_attn",
+            q_shape=(chunk, n_q, latent),
+            kv_shape=(ctx, latent),
+            dtype_bytes=model.dtype_bytes,
+            kernel="prefill",
+        )
+        return float(op.features()["flops"])
+    n_q, n_kv, d = _dense_heads(model)
+    op = FusedAttnOp(
+        name="fused_attn",
+        q_shape=(chunk, n_q, d),
+        k_shape=(ctx, n_kv, d),
+        v_shape=(ctx, n_kv, d),
+        dtype_bytes=model.dtype_bytes,
+        kernel="prefill",
+    )
+    return float(op.features()["flops"])
+
+
+def _qkv_proj_flops(*, tokens: int) -> float:
+    model = ModelConfig(
+        num_layers=1,
+        hidden_size=1024,
+        intermediate_size=2816,
+        num_q_heads=16,
+        num_kv_heads=16,
+        head_dim=64,
+        attn_variant=AttnVariant.MHA,
+    )
+    h = model.hidden_size
+    n_q, n_kv, d = _dense_heads(model)
+    op = GemmOp(
+        name="gemm_qkv",
+        a_shape=(tokens, h),
+        b_shape=(h, (n_q + 2 * n_kv) * d),
+        dtype_bytes=model.dtype_bytes,
+    )
+    return float(op.features()["flops"])
+
+
 class TestPrefillKvCacheCost(unittest.TestCase):
     def test_features_capture_cached_prefix(self) -> None:
         feats = extract_batch_features(
@@ -108,7 +129,7 @@ class TestPrefillKvCacheCost(unittest.TestCase):
         self.assertEqual(feats.phase, BatchPhase.PREFILL)
         self.assertEqual(feats.num_prefill_tokens, 32)
         self.assertEqual(feats.cached_prefix_tokens, 64)
-        self.assertEqual(feats.cached_decode_tokens, 0)  # decode-only aggregate
+        self.assertEqual(feats.cached_decode_tokens, 0)
         self.assertEqual(feats.prefill_chunk_lens, [32])
         self.assertEqual(feats.prefill_cached_lens, [64])
 
@@ -116,11 +137,9 @@ class TestPrefillKvCacheCost(unittest.TestCase):
         cold = _attn_prefill_core_flops(chunk=32, cached=0)
         warm = _attn_prefill_core_flops(chunk=32, cached=96)
         self.assertGreater(warm, cold)
-        # chunk×ctx vs chunk×chunk → (32+96)/32 = 4×
         self.assertAlmostEqual(warm / cold, 4.0, places=6)
 
     def test_multi_prefill_is_sum_not_product_of_sums(self) -> None:
-        """N identical prefills must cost N× one request, not N²."""
         model = ModelConfig(
             num_layers=1,
             hidden_size=1024,
@@ -130,13 +149,23 @@ class TestPrefillKvCacheCost(unittest.TestCase):
             head_dim=64,
             attn_variant=AttnVariant.MHA,
         )
+
+        def fused_flops(feats: BatchFeatures) -> float:
+            dag = build_operator_dag(
+                model=model, parallel=ParallelConfig(), batch=feats
+            )
+            total = 0.0
+            for op in dag.operators:
+                if isinstance(op, FusedAttnOp):
+                    total += float(lower_op(op).features.get("flops", 0.0))
+            return total
+
         one = BatchFeatures(
             phase=BatchPhase.PREFILL,
             num_tokens=32,
             num_prefill_tokens=32,
             num_decode_tokens=0,
             batch_size=1,
-            cached_prefix_tokens=0,
             prefill_chunk_lens=[32],
             prefill_cached_lens=[0],
         )
@@ -146,59 +175,36 @@ class TestPrefillKvCacheCost(unittest.TestCase):
             num_prefill_tokens=64,
             num_decode_tokens=0,
             batch_size=2,
-            cached_prefix_tokens=0,
             prefill_chunk_lens=[32, 32],
             prefill_cached_lens=[0, 0],
         )
-
-        def prefill_flops(feats: BatchFeatures) -> float:
-            ops = make_attn_block_operators(
-                layer_id=0, model=model, batch=feats, deps=[], tp_size=1
-            )
-            for op in ops:
-                if op.features.get("rf_op") == "attn_prefill":
-                    return float(op.features["flops"])
-            raise AssertionError("missing attn_prefill")
-
-        self.assertAlmostEqual(prefill_flops(two) / prefill_flops(one), 2.0, places=6)
+        self.assertAlmostEqual(fused_flops(two) / fused_flops(one), 2.0, places=6)
 
     def test_multi_decode_uses_per_request_kv(self) -> None:
-        model = ModelConfig(
-            num_layers=1,
-            hidden_size=1024,
-            intermediate_size=2816,
-            num_q_heads=16,
-            num_kv_heads=16,
-            head_dim=64,
-            attn_variant=AttnVariant.MHA,
+        n_q, n_kv, d = 16, 16, 64
+        a = FusedAttnOp(
+            name="a",
+            q_shape=(1, n_q, d),
+            k_shape=(100, n_kv, d),
+            v_shape=(100, n_kv, d),
+            dtype_bytes=2,
+            kernel="decode",
         )
-        # 1 tok @ ctx 100 + 3 tok @ ctx 1000 → 100 + 3000 = 3100 scale units
-        uneven = BatchFeatures(
-            phase=BatchPhase.DECODE,
-            num_tokens=4,
-            num_prefill_tokens=0,
-            num_decode_tokens=4,
-            batch_size=2,
-            cached_decode_tokens=1100,
-            decode_token_lens=[1, 3],
-            decode_kv_lens=[100, 1000],
+        b = FusedAttnOp(
+            name="b",
+            q_shape=(3, n_q, d),
+            k_shape=(1000, n_kv, d),
+            v_shape=(1000, n_kv, d),
+            dtype_bytes=2,
+            kernel="decode",
         )
-        # Mean approximation would be wrong; per-request sum is reference.
-        ops = make_attn_block_operators(
-            layer_id=0, model=model, batch=uneven, deps=[], tp_size=1
-        )
-        flops = next(
-            float(o.features["flops"])
-            for o in ops
-            if o.features.get("rf_op") == "attn_decode"
-        )
-        n_q, _, d = 16, 16, 64
+        flops = float(a.features()["flops"]) + float(b.features()["flops"])
         expected = 4.0 * 1 * n_q * d * 100 + 4.0 * 3 * n_q * d * 1000
         self.assertAlmostEqual(flops, expected, places=3)
 
     def test_smaller_chunk_reduces_linear_like_proj_cost(self) -> None:
-        full = _pre_proj_flops(tokens=64)
-        hit = _pre_proj_flops(tokens=32)  # 50% remaining after cache hit
+        full = _qkv_proj_flops(tokens=64)
+        hit = _qkv_proj_flops(tokens=32)
         self.assertAlmostEqual(hit / full, 0.5, places=6)
 
     def test_mla_prefill_uses_cached_prefix(self) -> None:

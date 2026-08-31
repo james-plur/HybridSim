@@ -10,7 +10,7 @@ from hybridsim_infer.request import InferenceRequest
 class RequestGenerator(ABC):
     """Pluggable builder for request arrivals fed to ``schedule_arrivals``.
 
-    Orthogonal to ``WorkloadGenerator`` (which builds Engine TimeoutKernels
+    Orthogonal to ``InferWorkloadGenerator`` (which builds Engine TimeoutKernels
     from an already-scheduled ``ScheduleBatch``).
     """
 

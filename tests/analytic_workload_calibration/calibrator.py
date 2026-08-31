@@ -1,8 +1,8 @@
-"""Offline calibration helpers for analytic OpWorkloadGenerator (tests only).
+"""Offline calibration helpers for op-level OpLevelWorkloadGenerator (tests only).
 
 Fit a ``duration_scale`` (and optionally device/network knobs) against a
 reference predictor such as Frontier RF. Production code only consumes the
-resulting ``AnalyticalConfig.duration_scale`` / device params — it does not
+resulting ``OpLevelConfig.duration_scale`` / device params — it does not
 import this package.
 """
 
@@ -12,8 +12,8 @@ from dataclasses import replace
 from typing import Callable, Iterable, Sequence
 
 from hybridsim_infer.schedule_types import ScheduleBatch
-from hybridsim_infer.workload_generators import OpWorkloadGenerator
-from hybridsim_infer.workload_generators.analytic_model import AnalyticalConfig
+from hybridsim_infer.workload_generators import OpLevelWorkloadGenerator
+from hybridsim_infer.workload_generators.configs import OpLevelConfig
 
 
 def relative_error(got: float, ref: float) -> float:
@@ -48,7 +48,7 @@ def fit_duration_scale(
 
 
 def measure_raw_durations(
-    gen: OpWorkloadGenerator,
+    gen: OpLevelWorkloadGenerator,
     batches: Sequence[ScheduleBatch],
     *,
     metric: str = "critical_path",
@@ -63,7 +63,7 @@ def measure_raw_durations(
 
 
 def calibrate_duration_scale(
-    gen: OpWorkloadGenerator,
+    gen: OpLevelWorkloadGenerator,
     batches: Sequence[ScheduleBatch],
     reference_predict: Callable[[ScheduleBatch], float],
     *,
@@ -81,16 +81,16 @@ def calibrate_duration_scale(
 
 
 def calibrated_config(
-    base: AnalyticalConfig,
+    base: OpLevelConfig,
     *,
     duration_scale: float,
-) -> AnalyticalConfig:
+) -> OpLevelConfig:
     """Return a copy of ``base`` with calibrated ``duration_scale`` for reuse."""
     return replace(base, duration_scale=float(duration_scale))
 
 
 def alignment_errors(
-    gen: OpWorkloadGenerator,
+    gen: OpLevelWorkloadGenerator,
     batches: Sequence[ScheduleBatch],
     reference_predict: Callable[[ScheduleBatch], float],
     *,

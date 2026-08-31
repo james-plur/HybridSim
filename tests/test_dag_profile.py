@@ -13,12 +13,12 @@ _PY = _HYBRIDSIM_ROOT / "src" / "python"
 if str(_PY) not in sys.path:
     sys.path.insert(0, str(_PY))
 
-from hybridsim_infer.workload_generators.analytic_model.configs import (
-    AnalyticalConfig,
+from hybridsim_infer.workload_generators.configs import (
     ModelConfig,
+    OpLevelConfig,
     ParallelConfig,
 )
-from hybridsim_infer.workload_generators.analytic_model.dag_profile import (
+from hybridsim_infer.workload_generators.infer_workload_generator.op_level.analytic.dag_profile import (
     asap_schedule,
     build_chrome_trace,
     make_demo_prefill_batch,
@@ -27,7 +27,7 @@ from hybridsim_infer.workload_generators.analytic_model.dag_profile import (
     summarize_overlap,
     write_chrome_trace,
 )
-from hybridsim_infer.workload_generators.analytic_model.types import AttnVariant
+from hybridsim_infer.workload_generators.types import AttnVariant
 
 
 class TestDagProfile(unittest.TestCase):
@@ -54,7 +54,7 @@ class TestDagProfile(unittest.TestCase):
         self.assertEqual(ranks[-1], (3, 1, 1))
 
     def test_chrome_trace_structure(self) -> None:
-        cfg = AnalyticalConfig(
+        cfg = OpLevelConfig(
             model=ModelConfig(
                 num_layers=2,
                 hidden_size=1024,
@@ -67,7 +67,7 @@ class TestDagProfile(unittest.TestCase):
             parallel=ParallelConfig(tp_size=2, pp_size=1),
         )
         batch = make_demo_prefill_batch(chunk=32, cached=16)
-        trace = profile_schedule_batch(batch, analytical=cfg)
+        trace = profile_schedule_batch(batch, op_level=cfg)
         events = trace["traceEvents"]
         self.assertTrue(any(e.get("ph") == "M" for e in events))
         completes = [e for e in events if e.get("ph") == "X"]
@@ -85,7 +85,7 @@ class TestDagProfile(unittest.TestCase):
         batch = make_demo_prefill_batch(chunk=16, cached=0)
         trace = profile_schedule_batch(
             batch,
-            analytical=AnalyticalConfig(parallel=ParallelConfig(tp_size=1)),
+            op_level=OpLevelConfig(parallel=ParallelConfig(tp_size=1)),
             model_preset="llama-3.1-8b",
         )
         self.assertGreater(trace["otherData"]["num_kernels"], 0)

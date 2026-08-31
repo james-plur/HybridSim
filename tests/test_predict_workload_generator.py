@@ -1,4 +1,4 @@
-"""Align PredictWorkloadGenerator with Frontier BaseExecutionTimePredictor."""
+"""Align BatchLevelWorkloadGenerator with Frontier BaseExecutionTimePredictor."""
 
 from __future__ import annotations
 
@@ -27,9 +27,9 @@ try:
     from hybridsim_infer.request import InferenceRequest
     from hybridsim_infer.schedule_types import DecodeChunk, PrefillChunk, ScheduleBatch
     from hybridsim_infer.workload_generators import (
+        BatchLevelWorkloadGenerator,
         FrontierBatchDurationPredictor,
-        PredictWorkloadGenerator,
-        make_workload_generator,
+        make_infer_workload_generator,
     )
 
     _FRONTIER_AVAILABLE = True
@@ -109,7 +109,7 @@ class TestPredictAlignsWithFrontier(unittest.TestCase):
             cluster_type=ClusterType.MONOLITHIC,
             is_moe=False,
         )
-        self.gen = PredictWorkloadGenerator(self.wrap)
+        self.gen = BatchLevelWorkloadGenerator(self.wrap)
 
     def _assert_aligned(self, sb: ScheduleBatch) -> None:
         got = self.wrap.predict(sb)
@@ -185,11 +185,12 @@ class TestPredictAlignsWithFrontier(unittest.TestCase):
         self._assert_aligned(sb)
 
     def test_factory_predict_mode(self) -> None:
-        gen = make_workload_generator(
-            duration_mode="predict",
+        gen = make_infer_workload_generator(
+            duration_mode="batch_level",
+            batch_predictor="frontier",
             frontier_predictor=self.fp,
         )
-        self.assertIsInstance(gen, PredictWorkloadGenerator)
+        self.assertIsInstance(gen, BatchLevelWorkloadGenerator)
         req = InferenceRequest(
             request_id=5,
             arrived_at=0.0,

@@ -38,7 +38,7 @@ _PY = _REPO_ROOT / "src" / "python"
 if str(_PY) not in sys.path:
     sys.path.insert(0, str(_PY))
 
-from hybridsim_infer.workload_generators.analytic_model.kv_cache import (  # noqa: E402
+from hybridsim_infer.workload_generators.kv_cache import (  # noqa: E402
     bytes_per_token,
 )
 
@@ -245,12 +245,12 @@ def run_cell(payload: dict[str, Any]) -> dict[str, Any]:
     try:
         from hybridsim_infer import InferenceConfig, build_inference_simulation
         from hybridsim_infer.request_generators import KvCacheTraceRequestGenerator
-        from hybridsim_infer.workload_generators.analytic_model.configs import (
-            AnalyticalConfig,
+        from hybridsim_infer.workload_generators.configs import (
             DeviceConfig,
+            OpLevelConfig,
             ParallelConfig,
         )
-        from hybridsim_infer.workload_generators.analytic_model.kv_cache import (
+        from hybridsim_infer.workload_generators.kv_cache import (
             bytes_per_token as bpt_fn,
         )
 
@@ -271,7 +271,7 @@ def run_cell(payload: dict[str, Any]) -> dict[str, Any]:
         time_scale = float(payload.get("time_scale") or 1.0)
         trace_path = Path(payload["trace_path"])
 
-        analytical = AnalyticalConfig(
+        op_level = OpLevelConfig(
             device=DeviceConfig(
                 peak_flops=peak_flops,
                 hbm_bandwidth_bps=H100_HBM_BPS,
@@ -283,9 +283,9 @@ def run_cell(payload: dict[str, Any]) -> dict[str, Any]:
         cfg = InferenceConfig(
             cluster_type="monolith",
             num_replicas=1,
-            duration_mode="analytical",
+            duration_mode="op_level",
             model_preset=model_preset,
-            analytical_config=analytical,
+            op_level_config=op_level,
             enable_kv_client=True,
             enable_prefix_caching=True,
             block_size=BLOCK_SIZE,

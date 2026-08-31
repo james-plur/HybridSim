@@ -16,7 +16,8 @@ def main() -> None:
     cfg = InferenceConfig(
         num_replicas=1,
         step_interval=1e-3,
-        duration_mode="token_proportional",
+        duration_mode="batch_level",
+        batch_predictor="token_proportional",
         prefill_s_per_token=1e-5,
         decode_s_per_token=1e-4,
         tokens_per_step=64,

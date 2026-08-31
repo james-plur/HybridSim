@@ -18,7 +18,7 @@ Native Actor-based inference on hybridsim. Corresponds to
 | Fake GPU duration | `hybridsim_infer.workload_generators`（`fixed` / `token_proportional` / `predict`） |
 | Request profile | `hybridsim.request_profile`（独立进程写 Chrome Trace JSON → `profile/`） |
 
-**RequestGenerator vs WorkloadGenerator**：前者生成带 `arrived_at` 的 `InferenceRequest` 序列并注入 ClusterActor；后者把已调度的 `ScheduleBatch` 变成 Engine TimeoutKernel。ServeGen 虽自称 workload generator，在本项目中只作为请求到达/长度采样后端。
+**RequestGenerator vs InferWorkloadGenerator**：前者生成带 `arrived_at` 的 `InferenceRequest` 序列并注入 ClusterActor；后者把已调度的 `ScheduleBatch` 变成 Engine TimeoutKernel。ServeGen 虽自称 workload generator，在本项目中只作为请求到达/长度采样后端。
 
 请求生成专项文档（数据来源、KV 轨迹生成、数据结构）：[`docs/request_generation.md`](../../docs/request_generation.md)。
 
@@ -114,7 +114,7 @@ PYTHONHASHSEED=0 PYTHONPATH=src/python:tests:. \
   python tests/test_mooncake_alignment.py -v
 ```
 
-`InferenceConfig(duration_mode="token_proportional")` 时 batch 时长 ∝ prefill/decode token 数。
+`InferenceConfig(duration_mode="batch_level", batch_predictor="token_proportional")` 时 batch 时长 ∝ prefill/decode token 数。
 
 `InferenceConfig(framework="vllm")` 选择 replica 内调度实现；扩展时实现 `InferenceScheduler` 子类并 `SchedulerFactory.register("sglang", …)`。
 

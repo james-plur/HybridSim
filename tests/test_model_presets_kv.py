@@ -13,26 +13,29 @@ if str(_PY) not in sys.path:
     sys.path.insert(0, str(_PY))
 
 from hybridsim_infer.kv_system.client import KvClient
-from hybridsim_infer.workload_generators.analytic_model import (
-    AttnVariant,
-    BatchFeatures,
-    BatchPhase,
-    ModelConfig,
-    NetworkConfig,
-    ParallelConfig,
-    build_operator_dag,
-    bytes_per_token,
-    cache_bytes,
+from hybridsim_infer.workload_generators import (
+    KvWorkloadGenerator,
     list_presets,
     load_preset,
 )
-from hybridsim_infer.workload_generators.analytic_model.model_presets import (
-    preset_meta,
+from hybridsim_infer.workload_generators.configs import (
+    ModelConfig,
+    NetworkConfig,
+    ParallelConfig,
 )
-from hybridsim_infer.workload_generators.kv_transfer import (
-    KvTransferWorkloadGenerator,
+from hybridsim_infer.workload_generators.infer_workload_generator.batch_features import (
+    BatchFeatures,
+    BatchPhase,
+)
+from hybridsim_infer.workload_generators.infer_workload_generator.op_level.mock.models.transformer import (
+    build_operator_dag,
+)
+from hybridsim_infer.workload_generators.kv_cache import bytes_per_token, cache_bytes
+from hybridsim_infer.workload_generators.kv_workload_generator import (
     transfer_duration_s,
 )
+from hybridsim_infer.workload_generators.model_presets import preset_meta
+from hybridsim_infer.workload_generators.types import AttnVariant
 
 _EXPECTED_IDS = {
     "deepseek-v4-pro",
@@ -151,8 +154,8 @@ class TestDsaDag(unittest.TestCase):
             batch=batch,
         )
         names = [op.name for op in dag.operators]
-        self.assertTrue(any("attn_mla_prefill" in n for n in names))
-        self.assertTrue(any("attn_indexer_cache_save" in n for n in names))
+        self.assertTrue(any("fused_mla_attn" in n for n in names))
+        self.assertTrue(any("indexer_cache_save" in n for n in names))
 
     def test_deepseek_v32_dsa(self) -> None:
         model = load_preset("deepseek-v3.2")
@@ -192,7 +195,7 @@ class TestKvTransfer(unittest.TestCase):
     def test_workload_generator_dict(self) -> None:
         model = load_preset("deepseek-v3")
         net = NetworkConfig.from_bandwidth(latency_s=2e-4, bandwidth_gbps=50.0)
-        gen = KvTransferWorkloadGenerator(model=model, network=net)
+        gen = KvWorkloadGenerator(model=model, network=net)
         wl = gen(
             workload_id=7,
             request_id=3,
@@ -215,7 +218,7 @@ class TestKvTransfer(unittest.TestCase):
             kv_formula="standard_gqa",
             dtype_bytes=2,
         )
-        gen = KvTransferWorkloadGenerator(
+        gen = KvWorkloadGenerator(
             model=model,
             bandwidth_gbps=50.0,
             latency_s=1e-3,

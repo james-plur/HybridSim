@@ -23,26 +23,29 @@ class InferenceConfig(SimulationConfig):
     #: event-driven: Request / BatchEnd / KVTransferEnd / KVLookupReply, plus a
     #: same-tick re-arm only when the last ``on_step`` made progress.
     step_interval: float = 1e-3
-    #: Dummy TimeoutKernel duration when ``duration_mode="fixed"``.
+    #: Dummy TimeoutKernel duration when ``duration_mode="batch_level"``
+    #: and ``batch_predictor="fixed"``.
     dummy_exec_s: float = 0.05
-    #: ``fixed``, ``token_proportional``, ``predict`` (Frontier RF), or ``analytical``.
-    duration_mode: str = "fixed"
+    #: ``batch_level`` (predictor) or ``op_level`` (mock DAG + Roofline / α-β).
+    duration_mode: str = "batch_level"
+    #: ``fixed`` / ``token_proportional`` / ``frontier`` (batch_level only).
+    batch_predictor: str = "fixed"
     prefill_s_per_token: float = 1e-4
     decode_s_per_token: float = 1e-3
     duration_base_s: float = 0.0
-    #: When ``duration_mode=predict``: dense MoE flag for Frontier ``Batch.is_moe``.
+    #: When ``batch_predictor=frontier``: dense MoE flag for Frontier ``Batch.is_moe``.
     frontier_is_moe: bool = False
-    #: When ``duration_mode=predict``: replica id stamped on adapted Frontier ``Batch``.
+    #: When ``batch_predictor=frontier``: replica id stamped on adapted Frontier ``Batch``.
     frontier_replica_id: int = 0
-    #: Injected Frontier predictor for ``predict`` mode (not serialized; set by caller).
+    #: Injected Frontier predictor for ``frontier`` predictor (not serialized).
     frontier_predictor: object | None = None
-    #: Injected Frontier ``ClusterType`` for ``predict`` mode (default MONOLITHIC).
+    #: Injected Frontier ``ClusterType`` for ``frontier`` predictor (default MONOLITHIC).
     frontier_cluster_type: object | None = None
-    #: ``AnalyticalConfig`` for analytical DAG / device / network (or None → defaults).
-    analytical_config: object | None = None
+    #: ``OpLevelConfig`` for op-level DAG / device / network (or None → defaults).
+    op_level_config: object | None = None
     #: Model preset id (e.g. ``llama-3.1-8b`` / ``deepseek-v3``). Shared across all
-    #: ``duration_mode`` values: injects ``ModelConfig`` into analytical DAG and KV
-    #: transfer volume (``kv_cache`` formulas). For ``predict``, RF timing still
+    #: ``duration_mode`` values: injects ``ModelConfig`` into op-level DAG and KV
+    #: transfer volume (``kv_cache`` formulas). For ``frontier``, RF timing still
     #: comes from ``frontier_predictor``; preset and RF should describe the same
     #: model family.
     model_preset: str | None = None

@@ -20,8 +20,8 @@ from hybridsim_infer.messages import (
 )
 from hybridsim_infer.request import InferenceRequest, RequestStatus
 from hybridsim_infer.workload_generators import (
-    WorkloadGenerator,
-    make_workload_generator,
+    InferWorkloadGenerator,
+    make_infer_workload_generator,
 )
 
 
@@ -56,7 +56,8 @@ class ReplicaActor(ActorBase):
         reserve_full_isl: bool = True,
         enable_prefix_caching: bool = False,
         scheduler_name: str = "vllm",
-        duration_mode: str = "fixed",
+        duration_mode: str = "batch_level",
+        batch_predictor: str = "fixed",
         prefill_s_per_token: float = 1e-4,
         decode_s_per_token: float = 1e-3,
         duration_base_s: float = 0.0,
@@ -65,8 +66,8 @@ class ReplicaActor(ActorBase):
         frontier_cluster_type: Any = None,
         frontier_replica_id: int = 0,
         frontier_is_moe: bool = False,
-        analytical_config: Any = None,
-        workload_generator: Optional[WorkloadGenerator] = None,
+        op_level_config: Any = None,
+        workload_generator: Optional[InferWorkloadGenerator] = None,
         profile: Any = None,
     ) -> None:
         self.replica_id = replica_id
@@ -86,10 +87,11 @@ class ReplicaActor(ActorBase):
             reserve_full_isl=reserve_full_isl,
             enable_prefix_caching=enable_prefix_caching,
         )
-        self._workload_generator: WorkloadGenerator = (
+        self._workload_generator: InferWorkloadGenerator = (
             workload_generator
-            or make_workload_generator(
+            or make_infer_workload_generator(
                 duration_mode=duration_mode,
+                batch_predictor=batch_predictor,
                 dummy_exec_s=dummy_exec_s,
                 prefill_s_per_token=prefill_s_per_token,
                 decode_s_per_token=decode_s_per_token,
@@ -99,7 +101,7 @@ class ReplicaActor(ActorBase):
                 frontier_cluster_type=frontier_cluster_type,
                 frontier_replica_id=frontier_replica_id,
                 frontier_is_moe=frontier_is_moe,
-                analytical_config=analytical_config,
+                op_level_config=op_level_config,
             )
         )
 
@@ -122,13 +124,11 @@ class ReplicaActor(ActorBase):
         # Homogeneous replicas: wire KvClient whenever a transfer engine is provided.
         # Store is optional (monolith/PD prefix pool); PD Decode uses control-plane lookup.
         if kv_engine is not None:
-            from hybridsim_infer.workload_generators.analytic_model.configs import (
-                NetworkConfig,
-            )
+            from hybridsim_infer.workload_generators.configs import NetworkConfig
 
             model_cfg = None
-            if analytical_config is not None and hasattr(analytical_config, "model"):
-                model_cfg = analytical_config.model
+            if op_level_config is not None and hasattr(op_level_config, "model"):
+                model_cfg = op_level_config.model
             net_cfg = NetworkConfig.from_bandwidth(
                 latency_s=float(kv_latency_s),
                 bandwidth_gbps=float(kv_bandwidth_gbps),
