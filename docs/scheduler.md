@@ -1,29 +1,8 @@
 # hybridsim Scheduler 调度实现
 
-> **本层位置**：集群分发（cluster）与 replica 内部第一步（schedule）。KV 细节见 [`kv.md`](kv.md)，batch 之后的计时与执行见 [`engine.md`](engine.md)，全景见 [`architecture.md`](architecture.md)。
 
-本文说明 hybridsim 如何把一条请求变成一步可执行的 `ScheduleBatch`，并对照 vLLM V1 `Scheduler`。  
-KV cache 的块哈希、Store / Mooncake 传输时序另文；这里只把 KV **当成调度门控**（`allocate` / `can_fit` 成功或失败），不展开其内部实现。
 
-相关代码：
-
-| 角色 | 路径 |
-|------|------|
-| 集群入口 | `hybridsim_infer/actors/cluster.py`（`ClusterActor`） |
-| 拓扑派发 | `hybridsim_infer/cluster/`（`MonolithClusterManager` / `PdClusterManager`） |
-| Replica 循环 | `hybridsim_infer/actors/replica.py`（`ReplicaActor`） |
-| 调度策略 | `hybridsim_infer/schedulers/vllm_schedule.py`（`VllmScheduler`） |
-| 调度接口 | `hybridsim_infer/schedulers/factory.py`（`InferenceScheduler` / `SchedulerFactory`） |
-| Batch DTO | `hybridsim_infer/schedule_types.py` |
-| 对齐测试 | `tests/schedule_alignment/`、`tests/test_schedule_alignment.py` |
-
-请求如何生成、字段含义见 [`request_generation.md`](request_generation.md)。  
-代码级逐项对照还可看 [`tests/schedule_alignment/schedule_alignment.md`](../tests/schedule_alignment/schedule_alignment.md)。  
-集群分发（流程 A）的拓扑与角色约定另见 [`architecture.md`](architecture.md) 的「集群分发」一节。
-
----
-
-## 1. 定位：从请求到 batch
+本文说明 hybridsim 如何把一条请求变成一步可执行的 `ScheduleBatch`
 
 hybridsim 把「调度」拆成两层，对应真实 serving 里 **集群入口** 和 **单实例 Engine**：
 
@@ -38,33 +17,30 @@ ReplicaActor  waiting / running         ← 实例内部：本步算哪些请求
       │  VllmScheduler.schedule_step
       ▼
 ScheduleBatch                           ← 本步决策结果（chunks + tokens_per_request）
-      │  InferWorkloadGenerator         ← 不在本文范围：把 batch 变成假执行时长
+      │  InferWorkloadGenerator         ← 不在本文范围：batch → … → kernel DAG（见 workload_generator.md）
       ▼
-WorkerEngine → BatchEndMsg
-      │  VllmScheduler.on_batch_complete
-      ▼
-推进 computed / output；finish 或 PD handoff
 ```
 
-**本文范围**是上图里「请求进入 replica 队列 → 产出 `ScheduleBatch` → 假执行后更新请求状态」。  
-**不在本文范围**：Store lookup / RDMA pull、APC 哈希细节、analytical / Frontier 计时。
 
-与 vLLM 的对应关系：
 
-| hybridsim | vLLM V1 | 说明 |
-|-----------|---------|------|
-| `ClusterActor` + `ClusterManager` | 无直接对应 | vLLM 一个 `Scheduler` 管一台 Engine；多实例由外部 LB / 自研 Conductor 完成。hybridsim 把这一层显式做成 Actor。 |
-| `ReplicaActor` 的 waiting / running | `Scheduler.waiting` / `Scheduler.running` | 实例内部两队列。 |
-| `VllmScheduler.schedule_step` | `Scheduler.schedule()` | 一步调度决策。 |
-| `ScheduleBatch` | `SchedulerOutput`（`num_scheduled_tokens` 等） | 本步要 forward 的 token 图。 |
-| `on_batch_complete` | `update_from_output(ModelRunnerOutput)` | forward 之后推进 computed / 采样 output。 |
-| `InferWorkloadGenerator` + `WorkerEngine` | GPU `ModelRunner` | 仿真用 TimeoutKernel 代替真实 kernel；对齐测试连这一层都不跑。 |
+相关代码：
 
-`VllmScheduler` **不是**把 vLLM 嵌进仿真器，而是按 vLLM 语义手写的决策模型。对齐测试用真实 `vllm.v1.core.sched.scheduler.Scheduler` 离线跑同一组 case，比对决策序列。
+
+| 角色                          | 路径                                                                        |
+| --------------------------- | ------------------------------------------------------------------------- |
+| Cluster Actor               | `hybridsim_infer/actors/cluster.py`（`ClusterActor`）                       |
+| Cluster Mgr (Cluster 的调度组件) | `hybridsim_infer/cluster/`（`MonolithClusterManager` / `PdClusterManager`） |
+| Replica Actor               | `hybridsim_infer/actors/replica.py`（`ReplicaActor`）                       |
+| Scheduler (Replica的调度组件)    | `hybridsim_infer/schedulers/vllm_schedule.py`（`VllmScheduler`）            |
+| Batch 数据结构                  | `hybridsim_infer/schedule_types.py`                                       |
+| 对齐测试                        | `tests/schedule_alignment/`、`tests/test_schedule_alignment.py`            |
+
 
 ---
 
-## 2. 主要流程
+
+
+## 详细流程
 
 下面按一次请求的生命周期拆成六个流程。每个流程先写 hybridsim 做什么，再写与 vLLM 的异同。
 
@@ -78,10 +54,12 @@ WorkerEngine → BatchEndMsg
 
 两种拓扑：
 
-| `cluster.type` | 选谁 | 盖章 |
-|----------------|------|------|
-| `monolith` | 全部 replica 里 least-load | 清掉 PD 标志 |
-| `pd` | Prefill 池 least-load | `do_remote_decode=True`；handoff 时再选 Decode 池 |
+
+| `cluster.type` | 选谁                      | 盖章                                           |
+| -------------- | ----------------------- | -------------------------------------------- |
+| `monolith`     | 全部 replica 里 least-load | 清掉 PD 标志                                     |
+| `pd`           | Prefill 池 least-load    | `do_remote_decode=True`；handoff 时再选 Decode 池 |
+
 
 PD 下 Prefill 算完 prompt 后，`ReplicaActor._maybe_handoff_prefill` 发 `RequestHandoffMsg`；`PdClusterManager.on_handoff` 选 Decode replica，并把 `num_computed_tokens` 清零（Decode 侧再拉 KV）。Replica **不按角色分代码路径**，只看请求字段。
 
@@ -92,6 +70,8 @@ vLLM Engine 内部没有这一层：请求已经在某个进程的 `Scheduler.ad
 对齐测试 **故意不覆盖** 本流程：harness 假定请求已经在「一台 replica」上。
 
 ---
+
+
 
 ### 流程 B：Replica 入队与步进循环
 
@@ -115,15 +95,19 @@ vLLM Engine 内部没有这一层：请求已经在某个进程的 `Scheduler.ad
 
 **对照 vLLM**
 
-| | hybridsim | vLLM |
-|--|-----------|------|
-| 入队 | `RequestMsg` → `waiting` | `Scheduler.add_request` → `waiting` |
-| 何时 schedule | DES `StepMsg`；受 Worker inflight 门控 | Engine 循环：上一 batch 的 output 回来后再 `schedule()` |
-| 并发 batch | `max_inflight_batches`（默认 1） | 通常一步一 batch；async scheduling 是另一条路径，本仿真默认关 |
 
-语义对齐点是 **队列 + `schedule()` 决策**，不是 DES 时钟或 inflight 深度。对齐 harness 用「逻辑 step 下标」代替 wall-clock，一步 schedule、一步假完成，等价于 `max_inflight=1`。
+|             | hybridsim                          | vLLM                                          |
+| ----------- | ---------------------------------- | --------------------------------------------- |
+| 入队          | `RequestMsg` → `waiting`           | `Scheduler.add_request` → `waiting`           |
+| 何时 schedule | DES `StepMsg`；受 Worker inflight 门控 | Engine 循环：上一 batch 的 output 回来后再 `schedule()` |
+| 并发 batch    | `max_inflight_batches`（默认 1）       | 通常一步一 batch；async scheduling 是另一条路径，本仿真默认关    |
+
+
+语义对齐点是 **队列 +** `schedule()` **决策**，不是 DES 时钟或 inflight 深度。对齐 harness 用「逻辑 step 下标」代替 wall-clock，一步 schedule、一步假完成，等价于 `max_inflight=1`。
 
 ---
+
+
 
 ### 流程 C：单步调度骨架（Phase 1 → Phase 2）
 
@@ -153,24 +137,32 @@ vLLM V1 同结构：
 
 ---
 
+
+
 ### 流程 D：本步 token 配额（chunked prefill / decode）
 
 在 Phase 1 / Phase 2 里，每条请求先算 `num_new`，再和剩余 `token_budget` 取 min。
 
 `VllmScheduler.chunk_limit`：
 
-| 阶段 | hybridsim | vLLM |
-|------|-----------|------|
-| Prefill | `min(剩余 prompt, long_prefill_token_threshold 或 tokens_per_step)` | `num_new_tokens` 受 prompt 剩余与 long-prefill 阈值限制 |
-| Decode | 默认 `decode_tokens_per_step=1` | 常见 path 每步 1 token |
-| 全局 budget | `max_num_scheduled_tokens`（Replica 传入 `token_budget`） | `max_num_batched_tokens` |
-| 并发上限 | `max_num_running_reqs` | `max_num_seqs` |
+
+| 阶段        | hybridsim                                                        | vLLM                                            |
+| --------- | ---------------------------------------------------------------- | ----------------------------------------------- |
+| Prefill   | `min(剩余 prompt, long_prefill_token_threshold 或 tokens_per_step)` | `num_new_tokens` 受 prompt 剩余与 long-prefill 阈值限制 |
+| Decode    | 默认 `decode_tokens_per_step=1`                                    | 常见 path 每步 1 token                              |
+| 全局 budget | `max_num_scheduled_tokens`（Replica 传入 `token_budget`）            | `max_num_batched_tokens`                        |
+| 并发上限      | `max_num_running_reqs`                                           | `max_num_seqs`                                  |
+
 
 `chunk_limit` 只决定「本步算多少」。WAITING 准入还有另一道门：`reserve_full_isl`（流程 E），看的是**整段当前序列**能不能放进 KV 池，而不是本 chunk。
 
 ---
 
+
+
 ### 流程 E：RUNNING 续跑、OOM 抢占、WAITING 准入
+
+
 
 #### E.1 Phase 1：allocate 失败 → FCFS preempt（含自抢占）
 
@@ -195,7 +187,7 @@ vLLM V1 同结构：
 4. （可选）本地 prefix 命中：抬高 `num_computed_tokens`，从而减少后面的 `chunk_limit`。对齐测试在开 APC 的 case 里会核对这一点；哈希实现见 KV 文档。
 5. （可选）`remote_lookup`：命中则排队 pull 并 `stop_after_remote`。对齐测试 **关闭** 这条路径（`remote_lookup=None`）。
 6. 若命中后已经 `is_finished()`：直接 finish + free（cached-finish）。
-7. **`reserve_full_isl=True`（默认）**：`can_fit(request, request.num_tokens)`，其中 `num_tokens = prefill + 已输出`。不够则停。
+7. `reserve_full_isl=True`**（默认）**：`can_fit(request, request.num_tokens)`，其中 `num_tokens = prefill + 已输出`。不够则停。
 8. `allocate(request, num_new)` 只增长本 chunk 所需块；失败则停。
 9. `status=RUNNING`，加入 running，记入本步 `scheduled_tokens`。
 
@@ -208,6 +200,8 @@ KV 容量在调度里只表现为：
 
 ---
 
+
+
 ### 流程 F：组 batch、假执行、状态推进
 
 **组 batch**（`build_batch`）
@@ -219,11 +213,11 @@ KV 容量在调度里只表现为：
 
 得到 `ScheduleBatch(batch_id, chunks, requests, tokens_per_request, req_to_new_blocks)`。
 
-**对照 vLLM**：`SchedulerOutput.num_scheduled_tokens` 是同一张「req → 本步 token 数」表。hybridsim 额外把 prefill/decode 拆成 chunk，方便 InferWorkloadGenerator 计时。
+**对照 vLLM**：`SchedulerOutput.num_scheduled_tokens` 是同一张「req → 本步 token 数」表。hybridsim 额外把 prefill/decode 拆成 chunk，方便 op-level mock 构图。
 
-**假执行（仿真路径，对齐测试跳过时长）**
+**workload 执行（仿真路径；对齐测试可跳过 Engine）**
 
-`ReplicaActor` 把 batch 交给 `InferWorkloadGenerator` → `WorkerEngine`。时长与调度决策正交。对齐 harness 不启 Engine，schedule 完立刻 `on_batch_complete`。
+`ReplicaActor` 把 batch 交给 `InferWorkloadGenerator`（mock → op DAG → Analyzer → kernel DAG）→ `WorkerEngine` → Engine。调度决策与时长估计算法正交。对齐 harness 不启 Engine，schedule 完立刻 `on_batch_complete`。
 
 **状态推进**（`on_batch_complete` ↔ vLLM `update_from_output`）
 
@@ -238,35 +232,24 @@ vLLM 的差异主要在记账方式：`schedule()` 里已经把 `num_computed_to
 
 ---
 
-### 配置旋钮对照
 
-| hybridsim | vLLM | 默认 / 备注 |
-|-----------|------|-------------|
-| `max_num_scheduled_tokens` | `max_num_batched_tokens` | driver 会抬到 ≥ `max_num_running_reqs`（vLLM 约束） |
-| `max_num_running_reqs` | `max_num_seqs` | |
-| `tokens_per_step` / `long_prefill_token_threshold` | `long_prefill_token_threshold` | HS 阈值 `0` 时回退 `tokens_per_step` |
-| `decode_tokens_per_step` | 每步 1 decode token | 默认 1 |
-| `reserve_full_isl` | `scheduler_reserve_full_isl` | 默认 True |
-| `num_gpu_blocks` / `block_size` | `KVCacheConfig.num_blocks` / `CacheConfig.block_size` | `num_gpu_blocks<=0` 时 HS 视为无限 |
-| `enable_prefix_caching` | `CacheConfig.enable_prefix_caching` | 默认 False |
-| `scheduler_name` / `SchedulerFactory` | （真实 `Scheduler` 类） | 目前只注册 `"vllm"` |
 
----
+## vLLM对齐测试
 
-## 3. `schedule_alignment` 对齐测试怎么做
-
-目标：**同一组请求、同一组旋钮下，hybridsim 的逐步调度决策与真实 vLLM `Scheduler` 一致。**  
+目标：**同一组请求、同一组旋钮下，hybridsim 的逐步调度决策与真实 vLLM** `Scheduler` **一致。**  
 不跑 DES、不跑 GPU、不启 Cluster、不启 Store。
 
 ### 3.1 测什么、不测什么
 
-| 测 | 不测 |
-|----|------|
-| Replica 内 waiting/running → 每步 `scheduled_tokens` | Cluster 分发、least-load、PD handoff |
-| preempt / finish 集合 | 真实 CUDA / ModelRunner |
-| token budget、chunked prefill、full-ISL 准入 | Mooncake / 远程 KV 时序 |
-| 开 APC 时的 `prefix_hit_tokens` / `free_blocks` / `allocated_blocks` | 公开 remapped `hash_ids` 与 vLLM hasher 混比 |
-| null block 预留 | spec decode / LoRA / encoder budget / watermark>0 |
+
+| 测                                                                 | 不测                                                |
+| ----------------------------------------------------------------- | ------------------------------------------------- |
+| Replica 内 waiting/running → 每步 `scheduled_tokens`                 | Cluster 分发、least-load、PD handoff                  |
+| preempt / finish 集合                                               | 真实 CUDA / ModelRunner                             |
+| token budget、chunked prefill、full-ISL 准入                          | Mooncake / 远程 KV 时序                               |
+| 开 APC 时的 `prefix_hit_tokens` / `free_blocks` / `allocated_blocks` | 公开 remapped `hash_ids` 与 vLLM hasher 混比           |
+| null block 预留                                                     | spec decode / LoRA / encoder budget / watermark>0 |
+
 
 设计意图见 `hybridsimdesign/hybridsim inference offline校准.md`。
 
@@ -296,17 +279,21 @@ on_batch_complete()                update_from_output(fake ModelRunnerOutput)
 
 目录：
 
-| 文件 | 作用 |
-|------|------|
-| `tests/schedule_alignment/cases/*.json` | 共享输入 |
-| `cases/*.expected.ledger.jsonl` | 已提交的 hybridsim golden |
-| `case_loader.py` | 解析 `CaseSpec` |
-| `schema.py` | `ScheduleStepRecord` 读写 |
-| `hybridsim_schedule_driver.py` | 离线驱动 HS `schedule_step` |
-| `vllm_schedule_driver.py` | 离线驱动真实 vLLM `Scheduler`（CPU，假 output） |
-| `compare.py` | 逐步 diff |
-| `run_case.py` | CLI |
-| `tests/test_schedule_alignment.py` | unittest：每个 case 两个 `subTest` |
+
+| 文件                                      | 作用                                    |
+| --------------------------------------- | ------------------------------------- |
+| `tests/schedule_alignment/cases/*.json` | 共享输入                                  |
+| `cases/*.expected.ledger.jsonl`         | 已提交的 hybridsim golden                 |
+| `case_loader.py`                        | 解析 `CaseSpec`                         |
+| `schema.py`                             | `ScheduleStepRecord` 读写               |
+| `hybridsim_schedule_driver.py`          | 离线驱动 HS `schedule_step`               |
+| `vllm_schedule_driver.py`               | 离线驱动真实 vLLM `Scheduler`（CPU，假 output） |
+| `compare.py`                            | 逐步 diff                               |
+| `run_case.py`                           | CLI                                   |
+| `tests/test_schedule_alignment.py`      | unittest：每个 case 两个 `subTest`         |
+
+
+
 
 ### 3.3 Case 输入
 
@@ -340,24 +327,26 @@ on_batch_complete()                update_from_output(fake ModelRunnerOutput)
 - 未给 `prompt_token_ids` 时，两边用同一规则合成：`[prompt_base + i for i in range(prefill)]`。开 APC 的 case 必须显式给相同 token 列表。
 - `framework` 默认 `"vllm"`，走 `SchedulerFactory`。
 
+
+
 ### 3.4 hybridsim driver 怎么跑
 
 `run_hybridsim_schedule`（`asyncio`，因为 `schedule_step` 是 async）：
 
 1. `SchedulerFactory.create("vllm", ...)` + `VllmKvCacheManager(num_gpu_blocks, block_size, enable_prefix_caching)`。
 2. 循环 `step = 0 .. max_steps`：
-   - 把 `arrive_step <= step` 的请求建成 `InferenceRequest`，`status=WAITING`，入 waiting。
-   - `await schedule_step(...)`，`remote_lookup=None`。
-   - 从 `ScheduleBatch.tokens_per_request` 抽出本步 ledger。
-   - **立刻** `on_batch_complete`（零时长假执行）。
-   - 记录 `scheduled_tokens` / `preempted_ids` / `finished_ids` / 队列 / KV 快照。
+  - 把 `arrive_step <= step` 的请求建成 `InferenceRequest`，`status=WAITING`，入 waiting。
+  - `await schedule_step(...)`，`remote_lookup=None`。
+  - 从 `ScheduleBatch.tokens_per_request` 抽出本步 ledger。
+  - **立刻** `on_batch_complete`（零时长假执行）。
+  - 记录 `scheduled_tokens` / `preempted_ids` / `finished_ids` / 队列 / KV 快照。
 3. 无 waiting、无 running、无未来到达则停；连续空闲 3 步也停。
 
 `PYTHONHASHSEED=0`，并 `reset_none_hash()`，让无 `hash_ids` 时的 block hash 与 vLLM `sha256` pickle 链一致。
 
 ### 3.5 vLLM driver 怎么跑
 
-`run_vllm_schedule` **构造真实 `Scheduler`，但不启 Engine、不跑模型**：
+`run_vllm_schedule` **构造真实** `Scheduler`**，但不启 Engine、不跑模型**：
 
 1. `VLLM_TARGET_DEVICE=cpu`，`HF_HUB_OFFLINE=1`，模型用本地 `dummy_hf_model`（GPT2 配置，`skip_tokenizer_init=True`）。
 2. 把 case 旋钮映射到 `SchedulerConfig` / `CacheConfig` / `KVCacheConfig`（`num_blocks` 与 HS `num_gpu_blocks` 同一值）。
@@ -375,13 +364,15 @@ on_batch_complete()                update_from_output(fake ModelRunnerOutput)
 
 每步一条 `ScheduleStepRecord`：
 
-| 字段 | 含义 | 默认是否比对 |
-|------|------|----------------|
-| `scheduled_tokens` | `req_id → 本步 token 数` | 是 |
-| `preempted_ids` | 本步被 FCFS 抢占的请求 | 是 |
-| `finished_ids` | 本步新完成 | 是 |
-| `waiting_ids` / `running_ids` | 步后队列 | 否（`compare_queues`） |
-| `free_blocks` / `allocated_blocks` / `prefix_hit_tokens` | KV / APC 快照 | 仅 `enable_prefix_caching=true` 的 case（`compare_kv`） |
+
+| 字段                                                       | 含义                    | 默认是否比对                                              |
+| -------------------------------------------------------- | --------------------- | --------------------------------------------------- |
+| `scheduled_tokens`                                       | `req_id → 本步 token 数` | 是                                                   |
+| `preempted_ids`                                          | 本步被 FCFS 抢占的请求        | 是                                                   |
+| `finished_ids`                                           | 本步新完成                 | 是                                                   |
+| `waiting_ids` / `running_ids`                            | 步后队列                  | 否（`compare_queues`）                                 |
+| `free_blocks` / `allocated_blocks` / `prefix_hit_tokens` | KV / APC 快照           | 仅 `enable_prefix_caching=true` 的 case（`compare_kv`） |
+
 
 `compare_ledgers`：
 
@@ -395,8 +386,8 @@ on_batch_complete()                update_from_output(fake ModelRunnerOutput)
 
 单元测试 `tests/test_schedule_alignment.py` 对每个 case 跑两组：
 
-1. **`TestScheduleAlignmentExpected`**：HS ledger vs 仓库里的 `*.expected.ledger.jsonl`（防 HS 自己回归）。
-2. **`TestScheduleAlignmentVllm`**：HS ledger vs 当场跑的 vLLM ledger（防与上游语义漂）。
+1. `TestScheduleAlignmentExpected`：HS ledger vs 仓库里的 `*.expected.ledger.jsonl`（防 HS 自己回归）。
+2. `TestScheduleAlignmentVllm`：HS ledger vs 当场跑的 vLLM ledger（防与上游语义漂）。
 
 ```bash
 cd hybridsim
@@ -415,16 +406,18 @@ PYTHONPATH=src/python:tests:. python -m schedule_alignment.run_case --case multi
 
 ### 3.8 当前 case 在验证哪条调度规则
 
-| Case | 主要打到的流程 | 在看什么 |
-|------|----------------|----------|
-| `chunked_prefill` | D：chunk | prompt=24、阈值=8 → 三步 8+8+8 prefill，再 1+1 decode（最后 prefill 步采样 +1） |
-| `multi_decode` | D + E：并发 decode | 三条短请求同时 decode，受 `max_num_scheduled_tokens=8` |
-| `mixed_batch` | C：Phase1+2 同拍 | 已在跑的 decode 与后到的 prefill 抢同一 budget |
-| `budget_exhaust` | C：Phase1 耗尽 budget | `max_num_scheduled_tokens=4`，Phase1 用完后同步不再 admit waiting |
-| `preempt_oom` | E：null block + full-ISL + 自抢占 | `num_gpu_blocks=3`（可用 2 块）；第二条不能因「第一 chunk 很小」被准入 |
-| `local_prefix` | E.2 关 APC 基线 | 同 prompt 也两侧全量 prefill |
-| `local_prefix_hit` | E.2 开 APC | 共享 32 token、block=16；命中上限 `prompt-1` 再按块对齐 → hit 16，第二请求少一步 prefill |
-| `local_prefix_partial` | E.2 非整块前缀 | 共享 24 token → 只计 1 个满块（16），剩余 8 仍要算 |
+
+| Case                   | 主要打到的流程                       | 在看什么                                                                |
+| ---------------------- | ----------------------------- | ------------------------------------------------------------------- |
+| `chunked_prefill`      | D：chunk                       | prompt=24、阈值=8 → 三步 8+8+8 prefill，再 1+1 decode（最后 prefill 步采样 +1）   |
+| `multi_decode`         | D + E：并发 decode               | 三条短请求同时 decode，受 `max_num_scheduled_tokens=8`                       |
+| `mixed_batch`          | C：Phase1+2 同拍                 | 已在跑的 decode 与后到的 prefill 抢同一 budget                                 |
+| `budget_exhaust`       | C：Phase1 耗尽 budget            | `max_num_scheduled_tokens=4`，Phase1 用完后同步不再 admit waiting           |
+| `preempt_oom`          | E：null block + full-ISL + 自抢占 | `num_gpu_blocks=3`（可用 2 块）；第二条不能因「第一 chunk 很小」被准入                   |
+| `local_prefix`         | E.2 关 APC 基线                  | 同 prompt 也两侧全量 prefill                                              |
+| `local_prefix_hit`     | E.2 开 APC                     | 共享 32 token、block=16；命中上限 `prompt-1` 再按块对齐 → hit 16，第二请求少一步 prefill |
+| `local_prefix_partial` | E.2 非整块前缀                     | 共享 24 token → 只计 1 个满块（16），剩余 8 仍要算                                 |
+
 
 `chunked_prefill` 的 golden 逐步形态（过滤前）：
 
@@ -436,6 +429,8 @@ step 3  scheduled {1: 1}   完成 prefill 当步 +1 output
 step 4  scheduled {1: 1}   最后 decode，finished {1}
 ```
 
+
+
 ### 3.9 已知差距（有意不声称对齐）
 
 - Cluster 负载均衡、PD handoff、真实执行时长。
@@ -444,15 +439,3 @@ step 4  scheduled {1: 1}   最后 decode，finished {1}
 - Speculative decode、LoRA、encoder budget、`watermark>0`、vLLM async scheduling。
 - HS `is_finished` 用 `computed >= prefill+decode`；vLLM 用 sampling / `max_tokens`。短 case 下两者一致，长尾停止条件未宣称逐比特相同。
 
----
-
-## 4. 读代码顺序
-
-1. `schedulers/factory.py` — `InferenceScheduler` 两个方法。
-2. `schedulers/vllm_schedule.py` — 流程 C–F。
-3. `actors/replica.py` 的 `on_request` / `on_step` / `on_batch_end` — DES 如何调用同一套 `schedule_step`。
-4. `actors/cluster.py` + `cluster/monolith.py` / `pd.py` — 流程 A。
-5. `tests/schedule_alignment/hybridsim_schedule_driver.py` 与 `vllm_schedule_driver.py` — 双端一步一账。
-6. 对照：`vllm/v1/core/sched/scheduler.py`（`schedule` / `update_from_output`）。
-
-扩展其他框架：实现 `InferenceScheduler`，`SchedulerFactory.register("sglang", ...)`，再写对应的 `*_schedule_driver` 抽同构 ledger。校准的是决策序列，不是把上游 Engine 嵌进仿真器。

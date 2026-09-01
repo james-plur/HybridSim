@@ -1,154 +1,221 @@
 # hybridsim
 
-基于 [simcpp20](https://github.com/fschuetz04/simcpp20) 的离散事件仿真 **Actor** 平台，提供 C++ 与 Python 接口。
+hybridsim 的目标是**建立一个AI infra系统的孪生仿真**，辅助 infra 的开发与设计验证。
 
-## 结构
+## 1. 设计原则
 
-```text
-src/hybridsim/            C++ Actor / Engine 核心
-src/python/binding/       pybind11 → hybridsim_py
-src/python/hybridsim/     平台 Python 包（Simulation / Config / ActorBase，无 Frontier）
-src/python/hybridsim_infer/  LLM 推理仿真（Cluster / Replica / KV / workload generator）
-docs/                     推理仿真文档（见 docs/README.md）
-examples/frontier/        用平台复现 Frontier 调度的实施例（见该目录 README）
-tests/                    平台测试
+仿真在追求两个设计目标：
+
+### 端到端系统仿真
+
+infra系统的各组件相互耦合——调度、KV、传输、计算时序会共同决定端到端行为。若只做局部仿真，往往无法复现跨层依赖引发的复杂问题。现有 AI 仿真器多聚焦单点（仅算子、仅网络、仅调度等），难以覆盖完整 serving 链路。
+
+hybridsim 因此以**端到端**为首要目标：从请求到达、集群分发、实例调度与 KV，到 workload 生成与 Engine 执行，在同一 DES 时间轴上联合推演。
+
+### 精度、效率、粒度的平衡
+
+
+| 维度     | 含义           |
+| ------ | ------------ |
+| **精度** | 与真实系统行为一致    |
+| **效率** | 仿真运行与迭代开发的成本 |
+| **粒度** | 建模的细节程度      |
+
+
+三者通常不可兼得。精度是硬约束；效率与粒度则按场景权衡。面向 infra 开发时，我们倾向于在**关注的子系统**上尽可能暴露细节（白盒、可调）。不关注的子系统上可以采用黑盒数据模型快速模拟。
+
+### 解决方案：Actor + DES
+
+为实现设计目标，hybridsim 采用**离散事件驱动（DES）的 Actor 基座**连接各子系统（设计见 docs/platform.md）：子系统之间只通过**消息接口**交互，实现逻辑解耦；DES 则让仿真时钟与子系统推进方式统一，便于按需调节粒度。
+
+
+| 方式             | 适用        | 特点                                                                    |
+| -------------- | --------- | --------------------------------------------------------------------- |
+| **Data-based** | 不重点关注的子系统 | 用解析模型或 trace 直接给出结果（如 α-β 传输、Roofline 算时）；精度与效率较高，细节为黑箱               |
+| **Mock-based** | 重点攻关的子系统  | 用可观测、可替换的白盒逻辑建模（如 vLLM 对齐的 scheduler、Mooncake 风格 KV 交互）；可控可调，便于对照真实实现 |
+
+
+同一套框架下，可将不同层配置为不同粒度：例如调度与 KV 走 mock-based 细粒度交互，计算与 collective 可用 data-based 估时，也可替换为 Computing Platform / Network 细粒度仿真。
+
+## 2. 整体实现
+
+分为平台底座和推理仿真两个部分
+
+
+| 层    | 包 / 目录                                                | 作用                                                                        |
+| ---- | ----------------------------------------------------- | ------------------------------------------------------------------------- |
+| 平台   | `hybridsim`（`src/hybridsim/`、`src/python/hybridsim/`） | DES Actor 运行时：`Simulation`、`ActorBase`、`EngineActor`、消息注册与 `run()`        |
+| 推理仿真 | `hybridsim_infer`（`src/python/hybridsim_infer/`）      | 把 LLM serving 建模为 Cluster / Replica / KV / Engine 等 Actor，跑端到端推理 workload |
+
+
+`hybridsim` 实现了DES-based actor仿真基座，同时也集成了一些C++层面的计算密集的Actor组件（见 [docs/platform.md](docs/platform.md)）
+
+`hybridsim_infer` 把一个 serving 集群建模为：**请求注入 → 集群分发 → 实例内调度与 KV → workload 生成 → Engine 执行**。全景见 [docs/architecture.md](docs/architecture.md)。
+
+```mermaid
+flowchart TB
+  RG["RequestGenerator"]
+  CL["ClusterActor"]
+  RP["ReplicaActor"]
+  KVS["KvStoreActor<br/>(可选)"]
+  ENG["EngineActor<br/>(计算)"]
+  KVE["EngineActor<br/>(KV 传输)"]
+
+  RG -->|"RequestArriveMsg"| CL
+  CL -->|"RequestMsg"| RP
+  RP <-->|"KV lookup / update"| KVS
+  RP -->|"kernel DAG workload"| ENG
+  RP -->|"KV transfer workload"| KVE
+  ENG -->|"BatchEndMsg"| RP
+  KVE -->|"KVTransferEndMsg"| RP
 ```
 
-## 推理仿真
 
-`hybridsim_infer` 在本平台上搭了一套 LLM serving 仿真：请求生成 → 集群分发 → 实例调度 + KV → 算子 DAG → Engine 执行。
 
-架构总览与分层文档入口：**[docs/README.md](docs/README.md)**（从 [docs/architecture.md](docs/architecture.md) 读起）。跑 demo 见 [examples/inference/README.md](examples/inference/README.md)。
+**分层职责**（细节见各专题文档）：
 
-## 依赖获取策略
 
-构建时按以下顺序获取依赖：
+| 分层     | 职责                                              | 文档                                                                                                        |
+| ------ | ----------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| 请求生成   | 到达时刻、prefill/decode 长度、前缀共享                     | [request_generation.md](docs/request_generation.md)                                                       |
+| 集群分发   | replica 间 least-load；`monolith` 或 PD 双池         | [scheduler.md](docs/scheduler.md)                                                                         |
+| 实例内    | 每 step：`schedule` → `kv` → `workload generator` | [scheduler.md](docs/scheduler.md)、[kv.md](docs/kv.md)、[workload_generator.md](docs/workload_generator.md) |
+| Engine | 按 kernel DAG 依赖推进仿真时钟                           | [engine.md](docs/engine.md)                                                                               |
 
+
+Replica 内每 step 的数据流：
+
+```mermaid
+flowchart LR
+  Q["waiting / running"] --> S["1. schedule"]
+  S <--> K["2. kv"]
+  S --> B["ScheduleBatch"]
+  B --> W["3. workload generator"]
+  W --> E["WorkerEngine"]
 ```
-third_party/simcpp20 或 third_party/pybind11 已存在？
-  ├─ 是 → 直接使用
-  └─ 否 → git clone 到 third_party/
-           └─ 失败 → FetchContent 拉取（仅作兜底）
+
+
+
+- **schedule**：token budget、并发、KV 容量 → `ScheduleBatch`
+- **kv**：本地 prefix cache、远端 Store、PD 传输（见 [kv.md](docs/kv.md)）
+- **workload generator**：`ScheduleBatch` → mock → Operator DAG → **Analyzer** → kernel DAG
+
+**现状**：Engine 几乎只执行 `TimeoutKernel`（时长在 Analyzer / predictor 阶段估好）。目标是在其下接入 **Computing Platform**（GPU 细粒度仿真）与 **Network**（通信细粒度仿真），二者尚未实现。
+
+### 仿真输入与输出
+
+```python
+from hybridsim_infer import InferenceConfig, build_inference_simulation
+
+cfg = InferenceConfig()
+infra = build_inference_simulation(cfg)
+infra.schedule_from_generator(gen)  # 或 schedule_arrivals(requests)
+infra.run()
+
+print(infra.metrics())
+infra.check_errors()
 ```
 
-`third_party/` 已在 `.gitignore` 中。
 
-## 环境要求
+|         | 内容                                                                                                            |
+| ------- | ------------------------------------------------------------------------------------------------------------- |
+| **输入①** | `InferenceConfig`：集群、调度、KV、workload 估时、落盘开关 → [inference_config.md](docs/inference_config.md)                 |
+| **输入②** | `InferenceRequest` / `RequestGenerator`：请求负载（build 之后注入）→ [request_generation.md](docs/request_generation.md) |
+| **输出**  | `metrics()`、`finished_requests`、可选 `output.`* 文件 → [outputs.md](docs/outputs.md)                              |
 
-- CMake >= 3.14
-- C++20 编译器（GCC >= 10 / Clang >= 14）
-- Git（用于自动 clone 依赖）
-- Python >= 3.10（可选，构建 `hybridsim_py` 时需要）
 
-## 构建
+---
 
-### 推荐：pip 安装（Python + C++ 绑定）
+
+
+## 3. 安装说明
+
+
+
+### 环境要求
+
+- CMake ≥ 3.14
+- C++20 编译器（GCC ≥ 10 / Clang ≥ 14）
+- Git（构建时自动获取 `simcpp20`、`pybind11` 到 `third_party/`，已在 `.gitignore`）
+- Python ≥ 3.10
+
+
+
+### 推荐：pip 可编辑安装
 
 ```bash
 pip install -e .
 ```
 
-会通过 CMake 编译 `hybridsim_py`，并将 `hybridsim` 包装入当前环境。需要 CMake ≥ 3.14、C++20 编译器、Git、Python ≥ 3.10。
+会经 CMake 编译 `hybridsim_py` 并安装 `hybridsim` / `hybridsim_infer`。若 pip 过旧，先升级：
 
-若系统 pip 过旧，先升级：`python3 -m pip install -U 'pip>=24' setuptools wheel`。若隔离构建拉取 cmake wheel 失败，可用：`python3 -m pip install --no-build-isolation -e .`。
+```bash
+python3 -m pip install -U 'pip>=24' setuptools wheel
+```
 
-安装后可直接：
+隔离构建拉取 cmake 失败时可改用：
+
+```bash
+python3 -m pip install --no-build-isolation -e .
+```
+
+验证安装：
 
 ```bash
 python3 examples/actor_python_demo.py
+PYTHONPATH=src/python:. python3 examples/inference/monolithic_demo.py
 ```
 
-### 测试
-
-Python 测试已统一为标准库 `unittest`。一键跑平台 + Frontier 示例测试：
+可选依赖（ServeGen 请求生成）：
 
 ```bash
-python3 run_tests.py
-# 仅平台：
-python3 run_tests.py --platform-only
-# 等价：
-python3 -m unittest discover -s tests -v
+pip install -e ".[servegen]"
 ```
 
-未安装 Frontier 时，Frontier 相关用例会自动 skip；对齐测试可用 `HYBRIDSIM_SKIP_FRONTIER_ALIGN=1` 跳过。
+
 
 ### 仅 CMake（C++ / 开发调试）
 
 ```bash
 cmake -B build
 cmake --build build
-ctest --test-dir build --output-on-failure   # C++ + discover 平台 Python 测试
+ctest --test-dir build --output-on-failure
 ```
 
-仅构建 C++（跳过 Python）：
+跳过 Python 绑定：
 
 ```bash
 cmake -B build -DHYBRIDSIM_BUILD_PYTHON=OFF
 cmake --build build
 ```
 
-未 `pip install` 时，可用 `SimulationConfig(build_dir=Path("build"))` 指向 CMake 产物目录。
+未 `pip install` 时，可用 `SimulationConfig(build_dir=Path("build"))` 或 `InferenceConfig(build_dir=...)` 指向 CMake 产物目录。
 
-## CMake 选项
 
-| 选项 | 默认 | 说明 |
-|------|------|------|
-| `HYBRIDSIM_BUILD_PYTHON` | ON | 构建 Python 模块 |
-| `HYBRIDSIM_BUILD_TESTS` | ON | 注册 CTest 测试 |
-| `HYBRIDSIM_BUILD_EXAMPLES` | ON | 构建示例程序 |
+| CMake 选项                   | 默认  | 说明                |
+| -------------------------- | --- | ----------------- |
+| `HYBRIDSIM_BUILD_PYTHON`   | ON  | 构建 `hybridsim_py` |
+| `HYBRIDSIM_BUILD_TESTS`    | ON  | 注册 CTest          |
+| `HYBRIDSIM_BUILD_EXAMPLES` | ON  | 构建 C++ 示例         |
 
-## Actor request / reply（同步请求-响应）
 
-在保留 `send` / `on` 的前提下，可用 `request` 等待对方处理结果（DES 协程挂起，非线程阻塞）。
 
-**C++**
 
-```cpp
-// 发送方（async handler 内）；delay 默认 0（立即投递）
-target.send(SetMsg{1}, /*delay=*/1.0);
-auto ev = target.request<Result>(QueryMsg{...}, /*delay=*/2.0);
-Result r = co_await ev;
+### 运行测试
 
-// 接收方（on 不变；可选 reply，否则 handler 结束自动空回复）
-b.on<QueryMsg>([](actor &self, QueryMsg &msg) {
-  self.reply(*self.current_request(), Result{...});
-});
+```bash
+python3 run_tests.py              # 平台 + Frontier 示例测试
+python3 run_tests.py --platform-only
 ```
 
-**Python**
+推理仿真相关测试（未安装包时加 `PYTHONPATH`）：
 
-```python
-# 接收方：普通 def 即可
-@on(QueryMsg)
-def handle_query(self, _actor, msg):
-    self.reply({"echo": msg.id})  # 或不调用 → 自动 None
-
-# 发送方：须 async def 才能 await；delay 默认 0
-@on(StartMsg)
-async def handle_start(self, _actor, _msg):
-    worker.send(SetMsg, delay=1.0, value=1)
-    result = await self.request(worker, QueryMsg, delay=2.0, id=1)
+```bash
+PYTHONPATH=src/python:. python3 tests/test_inference_skeleton.py -v
 ```
 
-## Python 平台使用
+未安装 Frontier 时 Frontier 用例自动 skip；可用 `HYBRIDSIM_SKIP_FRONTIER_ALIGN=1` 跳过对齐测试。
 
-```python
-from hybridsim import Simulation, SimulationConfig, ActorBase, on
+### 网络问题
 
-sim = Simulation(SimulationConfig())
-sim.register_messages([MyMsg])
-sim.spawn_actor(MyActor)
-sim.before_run = lambda: ...
-sim.run()
-sim.check_errors()
-```
-
-## Frontier 复现示例
-
-Frontier 调度复现（定制 Config / Msg / Actor 注册到平台 `Simulation`）见：
-
-**[examples/frontier/README.md](examples/frontier/README.md)**
-
-## 网络问题
-
-若 `git clone` 失败，可手动准备 `third_party/`，或配置镜像后重试。
+`git clone` 依赖失败时，可手动将 `simcpp20`、`pybind11` 放入 `third_party/`，或配置镜像后重试。

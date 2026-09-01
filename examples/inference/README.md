@@ -4,7 +4,7 @@ Native Actor-based inference on hybridsim. Corresponds to
 `hybridsimdesign/基于actor系统的推理仿真设计.md` and
 `hybridsimdesign/hybridsim inference offline校准.md` (**NO_NETWORK**).
 
-架构总览（各层职责、数据流、现状边界）：**[`docs/architecture.md`](../../docs/architecture.md)**；文档索引：[`docs/README.md`](../../docs/README.md)。本文只讲怎么跑。
+架构总览（各层职责、数据流、现状边界）：**[`docs/architecture.md`](../../docs/architecture.md)**；配置：**[`docs/inference_config.md`](../../docs/inference_config.md)**；输出：**[`docs/outputs.md`](../../docs/outputs.md)**；文档索引：[`docs/README.md`](../../docs/README.md)。本文只讲怎么跑。
 
 ## 分层与代码
 
@@ -14,13 +14,13 @@ Native Actor-based inference on hybridsim. Corresponds to
 | 集群分发 | `ClusterActor` + `hybridsim_infer.cluster`（`Monolith` / `Pd`） | [scheduler.md](../../docs/scheduler.md) |
 | 实例调度 | `ReplicaActor`（同构，无角色）+ `hybridsim_infer.schedulers`（默认 `VllmScheduler`） | [scheduler.md](../../docs/scheduler.md) |
 | KV | `VllmKvCacheManager`、`KvClient`、`KvStoreActor`（`kv.enable_store=True`） | [kv.md](../../docs/kv.md) |
-| 计时 | `hybridsim_infer.workload_generators`（`batch_level` / `op_level`） | [op_level_workload_generator.md](../../docs/op_level_workload_generator.md) |
+| 计时 | `hybridsim_infer.workload_generators`（`batch_level` / `op_level`） | [workload_generator.md](../../docs/workload_generator.md) |
 | Engine 执行 | `WorkerEngine` + 平台 `EngineActor`（`TimeoutKernel` DAG） | [engine.md](../../docs/engine.md) |
 | 观测 | `hybridsim.request_profile`（独立进程写 Chrome Trace JSON → `profile/`） | 见下节 |
 
 **RequestGenerator vs InferWorkloadGenerator**：前者生成带 `arrived_at` 的 `InferenceRequest` 序列并注入 ClusterActor；后者把已调度的 `ScheduleBatch` 变成 Engine TimeoutKernel。ServeGen 虽自称 workload generator，在本项目中只作为请求到达/长度采样后端。
 
-配置分组（cluster / schedule / kv / model / workload / output）：[`docs/inference_config.md`](../../docs/inference_config.md)。
+配置分组（cluster / schedule / kv / model / workload / output）：[`docs/inference_config.md`](../../docs/inference_config.md)；输出与 trace：[`docs/outputs.md`](../../docs/outputs.md)。
 
 ## Request profile（Chrome Trace）
 
@@ -59,7 +59,7 @@ PD 配置：`ClusterConfig(type="pd", num_prefill_replicas=..., num_decode_repli
 
 ## Mooncake-style KV（交互骨架）
 
-对齐 **调度阶段**（非真 RDMA / mooncake_master）；本地 APC / Store / PD 控制面三条路径的完整说明见 [`docs/kv.md`](../../docs/kv.md)：
+对齐 **调度阶段**（非真 RDMA / mooncake_master）；Prefix cache / Store 与 PD 传输的完整说明见 [`docs/kv.md`](../../docs/kv.md)：
 
 | 组件 | 职责 |
 |------|------|

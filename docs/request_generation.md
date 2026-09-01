@@ -1,65 +1,55 @@
 # hybridsim 请求生成
 
-> **本层位置**：五层结构里最上面的流量层，决定「什么时候来多少请求、每条多长、前缀怎么共享」，不决定执行时长。全景见 [`architecture.md`](architecture.md)。
-
 请求进入仿真的统一实体是 `InferenceRequest`（`hybridsim_infer/request.py`）。  
-三种生成方式都产出 `list[InferenceRequest]`，再经 `schedule_arrivals` / `schedule_from_generator` 注入 `ClusterActor`。
+以下列出的三种生成方式都产出 `list[InferenceRequest]`，再经 `schedule_arrivals` / `schedule_from_generator` 注入 `ClusterActor`。
 
-请求到达之后如何变成 batch（集群分发、replica `schedule_step`、与 vLLM 对照、对齐测试）：[`scheduler.md`](scheduler.md)。
+请求到达之后如何变成 batch（集群分发、replica `schedule_step`、与 vLLM 对照、对齐测试）：`[scheduler.md](scheduler.md)`。
 
 ---
 
 ## 1. `InferenceRequest` 数据结构
 
-| 字段 | 类型 | 谁填 | 含义与仿真关系 |
-|------|------|------|----------------|
-| `request_id` | `int` | 生成器 / 手写 | 请求唯一标识。贯穿 Cluster 派发、Replica 队列、Engine 事件、request profile 元数据。 |
-| `arrived_at` | `float` | 生成器 / 手写 | DES 到达时刻（秒）。`ClusterScheduler.schedule_arrivals` 用它 `send_at`，决定请求何时进入集群调度。 |
-| `num_prefill_tokens` | `int` | 生成器 / 手写 | Prompt 长度。决定 prefill 阶段要算多少 token；与 `num_computed_tokens` 比较可判断是否仍在 prefill（`is_prefill_chunk`）。InferWorkloadGenerator / op-level 计时也依赖本步实际 prefill chunk 长度。 |
-| `num_decode_tokens` | `int` | 生成器 / 手写 | 目标输出长度。与 prefill 一起构成请求总工作量；`is_finished()` 要求 `num_computed_tokens >= prefill + decode`。 |
-| `num_computed_tokens` | `int` | **运行时**（生成时通常 0） | 已计算 token 数。本地 APC / Store 命中后会抬高，从而缩小本步要算的 chunk；调度、KV 拉取、analytical attention（`cached + chunk`）都读它。 |
-| `num_output_tokens` | `int` | **运行时**（生成时通常 0） | 已采样输出长度。抢占后仍保留，用于 admit / `num_tokens`（对齐 vLLM「当前序列长度 = prompt + 已输出」）。 |
-| `prompt_token_ids` | `list[int]` | 生成器 / `__post_init__` | 见下方专题。 |
-| `hash_ids` | `list[int]` | 主要来自 KV trace | 见下方专题。 |
-| `block_size` | `int` | KV trace / 参数 | 每个 `hash_id`（或链式 hash 一块）对应多少 token。Store / APC 按块对齐；Mooncake 常 512，Bailian 常 16，Weka 常 64。 |
-| `status` | `RequestStatus` | **运行时** | `WAITING` / `RUNNING` / `WAIT_FOR_REMOTE_KVS` / `PREEMPTED` / `FINISHED`。Replica、KV pull、抢占逻辑围绕它流转。 |
-| `completed` | `bool` | **运行时** | 请求是否已走完仿真生命周期（供 profile / 收尾）。 |
-| `pending_remote_tokens` | `int` | **运行时** | 正在远程拉取的 KV token 数；与 `WAIT_FOR_REMOTE_KVS` 配合。 |
-| `kv_transfer_params` | `dict \| None` | **Cluster（PD）** | Mooncake 风格控制面参数，如 `do_remote_decode` / `do_remote_prefill` + `remote_replica_id`。生成器不填；PD 拓扑在 arrive / handoff 时盖章。 |
-| `pending_lookup` / `lookup_result` | 运行时 | Store 异步 lookup 进行中及缓存的回复；调度下一步再消费 hit 结果。 |
 
-常用派生属性：
+| 字段                                 | 类型              | 谁填                                         | 含义与仿真关系                                                                                                                                                       |
+| ---------------------------------- | --------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `request_id`                       | `int`           | 生成器 / 手写                                   | 请求唯一标识。贯穿 Cluster 派发、Replica 队列、Engine 事件、request profile 元数据。                                                                                                |
+| `arrived_at`                       | `float`         | 生成器 / 手写                                   | DES 到达时刻（秒）。`ClusterScheduler.schedule_arrivals` 用它 `send_at`，决定请求何时进入集群调度。                                                                                   |
+| `num_prefill_tokens`               | `int`           | 生成器 / 手写                                   | Prompt 长度。决定 prefill 阶段要算多少 token；与 `num_computed_tokens` 比较可判断是否仍在 prefill（`is_prefill_chunk`）。InferWorkloadGenerator / op-level 计时也依赖本步实际 prefill chunk 长度。 |
+| `num_decode_tokens`                | `int`           | 生成器 / 手写                                   | 目标输出长度。与 prefill 一起构成请求总工作量；`is_finished()` 要求 `num_computed_tokens >= prefill + decode`。                                                                     |
+| `num_computed_tokens`              | `int`           | **运行时**（生成时通常 0）                           | 已计算 token 数。本地 APC / Store 命中后会抬高，从而缩小本步要算的 chunk；调度、KV 拉取、analytical attention（`cached + chunk`）都读它。                                                         |
+| `num_output_tokens`                | `int`           | **运行时**（生成时通常 0）                           | 已采样输出长度。抢占后仍保留，用于 admit / `num_tokens`（对齐 vLLM「当前序列长度 = prompt + 已输出」）。                                                                                       |
+| `prompt_token_ids`                 | `list[int]`     | 生成器 / `__post_init__`                      | 见下方注释。                                                                                                                                                        |
+| `hash_ids`                         | `list[int]`     | 主要来自 KV trace                              | 见下方注释。                                                                                                                                                        |
+| `block_size`                       | `int`           | KV trace / 参数                              | 每个 `hash_id`（或链式 hash 一块）对应多少 token。Store / APC 按块对齐；Mooncake 常 512，Bailian 常 16，Weka 常 64。                                                                   |
+| `status`                           | `RequestStatus` | **运行时**                                    | `WAITING` / `RUNNING` / `WAIT_FOR_REMOTE_KVS` / `PREEMPTED` / `FINISHED`。Replica、KV pull、抢占逻辑围绕它流转。                                                           |
+| `completed`                        | `bool`          | **运行时**                                    | 请求是否已走完仿真生命周期（供 profile / 收尾）。                                                                                                                                |
+| `pending_remote_tokens`            | `int`           | **运行时**                                    | 正在远程拉取的 KV token 数；与 `WAIT_FOR_REMOTE_KVS` 配合。                                                                                                                |
+| `kv_transfer_params`               | `dict           | None`                                      | **Cluster（PD）**                                                                                                                                               |
+| `pending_lookup` / `lookup_result` | 运行时             | Store 异步 lookup 进行中及缓存的回复；调度下一步再消费 hit 结果。 |                                                                                                                                                               |
 
-- `num_tokens` = prefill + 已输出（当前序列长）
-- `num_tokens_with_output` = prefill + 目标 decode（完成所需总长）
-- `remaining_tokens` / `is_finished()` / `is_prefill_chunk`
 
-### `prompt_token_ids` 与 `hash_ids`（重点）
+
+
+### 关键注释：`prompt_token_ids` *与* `hash_ids`
 
 二者都可以描述「前缀长什么样」，但职责不同：
 
-| | `prompt_token_ids` | `hash_ids` |
-|--|-------------------|------------|
-| 是什么 | tokenizer 意义上的 token 序列（或占位序列） | 按前缀顺序排列的 **KV block 身份** |
-| 粒度 | 每个元素 ≈ 1 token | 每个元素 ≈ `block_size` 个 token 的一块 KV |
-| 谁用 | Framework / 本地 APC 在需要「按 token 切片」时；无 `hash_ids` 时用 vLLM 同款链式 hash 算 Store key | Store / 本地 APC 在有权威块 id 时 **直接** 当 block key（`block_keys_from_hash_ids`） |
-| 典型来源 | 手写、ServeGen（常由 `__post_init__` 按 `request_id` 合成）、SGLang 日志里的真实 `input_ids`、公开 trace 上的占位合成 | Mooncake / Bailian / Weka 等公开轨迹 |
 
-关键规则：
+|      | `prompt_token_ids`                                                                          | `hash_ids`                                                               |
+| ---- | ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| 是什么  | tokenizer 意义上的 token 序列（或占位序列）                                                              | 按前缀顺序排列的 **KV block 身份**                                                 |
+| 粒度   | 每个元素 ≈ 1 token                                                                              | 每个元素 ≈ `block_size` 个 token 的一块 KV                                       |
+| 谁用   | Framework / 本地 APC 在需要「按 token 切片」时；无 `hash_ids` 时用 vLLM 同款链式 hash 算 Store key              | Store / 本地 APC 在有权威块 id 时 **直接** 当 block key（`block_keys_from_hash_ids`） |
+| 典型来源 | 手写、ServeGen（常由 `__post_init__` 按 `request_id` 合成）、SGLang 日志里的真实 `input_ids`、公开 trace 上的占位合成 | Mooncake / Bailian / Weka 等公开轨迹                                          |
 
-1. **公开 KV 轨迹几乎没有真实 prompt**，只有脱敏后的 `hash_ids`。这时 `hash_ids` 是前缀共享的权威来源；`prompt_token_ids` 若存在，多半是长度占位，**不能**再拿去链式 hash 冒充 Store key。
-2. **无 `hash_ids`、只有 token**（List / ServeGen / schedule_alignment）：Store / APC 走 `block_keys_from_tokens(prompt_token_ids)`，与 vLLM APC 对齐时需同一套真实 token。
-3. 构造时若已有 `hash_ids`，`__post_init__` **不会**再按 `request_id` 造「每请求唯一」假 prompt，以免毁掉跨请求共享前缀。
-
-一句话：仿真 **命中率 / Store 前缀** 看 `hash_ids`（有则优先）；**算力长度与调度进度** 看 `num_*_tokens` / `num_computed_tokens`；`prompt_token_ids` 在无权威 hash 时承担「可哈希的内容」，有权威 hash 时只作可选填充。
 
 ---
 
-## 2. 基本用法
 
-配置字段分组、嵌套构造与旧字段对照：[inference_config.md](inference_config.md)。
 
-统一接线：
+## 2. 生成方式
+
+
 
 ```python
 from hybridsim_infer import InferenceConfig, ClusterConfig, build_inference_simulation
@@ -69,7 +59,7 @@ sim.schedule_from_generator(gen)   # 或 sim.schedule_arrivals(reqs)
 sim.run()
 ```
 
-配置字段树见 [`inference_config.md`](inference_config.md)。请求生成不进 `InferenceConfig`。
+
 
 ### 2.1 List：手写 / 单测 / Demo
 
@@ -174,13 +164,15 @@ sim.schedule_from_generator(gen)
 
 Generator 字段映射（所有来源归一化之后相同）：
 
-| JSONL | `InferenceRequest` |
-|-------|-------------------|
-| `timestamp` / `t` | `arrived_at`（可再 `time_scale` / `time_offset`） |
-| `input_length` / `in` | `num_prefill_tokens` |
-| `output_length` / `out` | `num_decode_tokens` |
-| `hash_ids` | `hash_ids`（权威 block key） |
-| `block_size` | `block_size` |
-| `input_ids`（若有） | `prompt_token_ids`；否则可合成占位 |
+
+| JSONL                   | `InferenceRequest`                            |
+| ----------------------- | --------------------------------------------- |
+| `timestamp` / `t`       | `arrived_at`（可再 `time_scale` / `time_offset`） |
+| `input_length` / `in`   | `num_prefill_tokens`                          |
+| `output_length` / `out` | `num_decode_tokens`                           |
+| `hash_ids`              | `hash_ids`（权威 block key）                      |
+| `block_size`            | `block_size`                                  |
+| `input_ids`（若有）         | `prompt_token_ids`；否则可合成占位                    |
+
 
 默认 `require_hash_ids=True`：无 hash 的行跳过。生成后按到达时间排序并重编号 `request_id`。
