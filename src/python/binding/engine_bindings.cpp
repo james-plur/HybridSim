@@ -2,10 +2,12 @@
 #include "engine_bindings.hpp"
 
 #include "hybridsim/engine/engine.hpp"
+#include "hybridsim/network.hpp"
 
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -92,13 +94,14 @@ eng::kernel_spec kernel_spec_from_python(const py::handle &obj) {
         "kernel must be a KernelSpec or dict with name, type, duration");
   }
   const py::dict d = py::reinterpret_borrow<py::object>(obj);
-  if (!d.contains("name") || !d.contains("duration")) {
-    throw std::invalid_argument("kernel dict requires name and duration");
+  if (!d.contains("name")) {
+    throw std::invalid_argument("kernel dict requires name");
   }
   return eng::kernel_spec{
       .name = py::str(d["name"]).cast<std::string>(),
       .type = d.contains("type") ? py::int_(d["type"]).cast<int32_t>() : 0,
-      .duration = py::float_(d["duration"]).cast<double>(),
+      .duration = d.contains("duration") ? py::float_(d["duration"]).cast<double>()
+                                         : 0.0,
       .dependencies = d.contains("dependencies")
                             ? dependencies_from_python(d["dependencies"])
                             : std::vector<std::size_t>{},
@@ -257,7 +260,19 @@ void bind_engine(py::module_ &m) {
              if (self->core->has_error()) {
                self->core->rethrow_if_error();
              }
-           });
+           })
+      .def(
+          "install_network",
+          [](PythonEngineActor &self,
+             std::shared_ptr<hybridsim::network::Network> net,
+             int32_t replica_id, int32_t rank) {
+            self.core->install_network(std::move(net),
+                                       hybridsim::network::NetworkAddr{
+                                           replica_id, rank});
+          },
+          py::arg("network"), py::arg("replica_id"), py::arg("rank"),
+          py::keep_alive<1, 2>(),
+          "Bind this engine to a fabric adapter at replica_id:rank");
 }
 
 } // namespace hybridsim::python

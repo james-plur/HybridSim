@@ -9,6 +9,7 @@ from typing import Any, Callable, Optional, TypeVar, Union
 from hybridsim.actor_base import ActorBase
 from hybridsim.config import SimulationConfig
 from hybridsim.messages import register_message, register_messages
+from hybridsim.network import assemble_network
 
 ActorT = TypeVar("ActorT", bound=ActorBase)
 
@@ -51,6 +52,7 @@ class Simulation:
         self.hs_sim = hs.Simulation()
         self.message_types: dict[str, Any] = {}
         self._actors: list[ActorBase] = []
+        self._networks: list[Any] = []
         self.before_run: Optional[Callable[[], None]] = None
         self._started = False
 
@@ -101,6 +103,44 @@ class Simulation:
         """Create a raw ``hybridsim_py.EngineActor`` bound to this simulation."""
         return self._hs.EngineActor(self.hs_sim)
 
+    def create_network(
+        self,
+        addrs: list[tuple[int, int]],
+        *,
+        topology: str = "fattree",
+        routing: str = "shortest_path",
+        layers: int = 1,
+        num_leaf: int = 0,
+        num_spine: int = 0,
+        leaf_downlinks: int = 0,
+        leaf_uplinks: int = 0,
+        link_bandwidth_bps: float = 50e9 / 8.0,
+        link_delay_s: float = 1e-6,
+        bw_policy: str = "max_min",
+        lb_policy: str = "ecmp_hash",
+        seed: int = 0,
+    ):
+        """Wire a flow-level fabric in Python (topology + routing plugins)."""
+        net = assemble_network(
+            self.hs_sim,
+            [(int(r), int(k)) for r, k in addrs],
+            topology=topology,
+            routing=routing,
+            bw_policy=bw_policy,
+            lb_policy=lb_policy,
+            seed=int(seed),
+            link_bandwidth_bps=float(link_bandwidth_bps),
+            link_delay_s=float(link_delay_s),
+            start=True,
+            layers=int(layers),
+            num_leaf=int(num_leaf),
+            num_spine=int(num_spine),
+            leaf_downlinks=int(leaf_downlinks),
+            leaf_uplinks=int(leaf_uplinks),
+        )
+        self._networks.append(net)
+        return net
+
     def _start_actors(self) -> None:
         for actor in self._actors:
             actor.start()
@@ -122,3 +162,5 @@ class Simulation:
     def check_errors(self) -> None:
         for actor in self._actors:
             actor.check_error()
+        for net in getattr(self, "_networks", []):
+            net.rethrow_if_error()

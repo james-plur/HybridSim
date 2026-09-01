@@ -1,10 +1,14 @@
-"""Analyze OperatorDAG → Engine TimeoutKernel workload dict."""
+"""Analytic analyzer: Roofline / α-β TimeoutKernels from an OperatorDAG."""
 
 from __future__ import annotations
 
 from typing import Any
 
 from hybridsim_infer.workload_generators.configs import DeviceConfig, NetworkConfig
+from hybridsim_infer.workload_generators.infer_workload_generator.op_level.analyzer import (
+    AnalyzeContext,
+    OpAnalyzer,
+)
 from hybridsim_infer.workload_generators.infer_workload_generator.op_level.analytic.lower import (
     lower_op,
 )
@@ -39,8 +43,11 @@ def total_kernel_duration_s(kernels: list[dict[str, Any]]) -> float:
     return sum(float(k.get("duration", 0.0)) for k in kernels)
 
 
-class AnalyticAnalyzer:
-    """Estimate Operator durations (Roofline / α-β) and emit TimeoutKernels.
+class AnalyticAnalyzer(OpAnalyzer):
+    """Estimate operator durations (Roofline / α-β) and emit TimeoutKernels.
+
+    Handles compute ops always. Also lowers ``CommOp`` via α-β when no separate
+    comm analyzer is configured.
 
     ``duration_scale`` is a static knob (typically filled after offline
     calibration); this module does not run RF fitting.
@@ -58,6 +65,9 @@ class AnalyticAnalyzer:
         self.network = network or NetworkConfig()
         self.duration_scale = float(duration_scale)
         self.mem_scale = float(mem_scale)
+
+    def handles(self, op: Any) -> bool:
+        return True
 
     def estimate_kernel_duration(self, plan: KernelPlan) -> float:
         feats = plan.features or {}
@@ -82,35 +92,37 @@ class AnalyticAnalyzer:
             )
         return float(raw) * self.duration_scale
 
+    def lower_op(
+        self,
+        op: Any,
+        *,
+        op_index: int,
+        ctx: AnalyzeContext,
+    ) -> list[dict[str, Any]]:
+        _ = (op_index, ctx)
+        plan = lower_op(op)
+        return [
+            {
+                "name": plan.name,
+                "duration": float(self.estimate_kernel_duration(plan)),
+                "rel_deps": [],
+            }
+        ]
+
     def analyze(
         self,
         op_dag: OperatorDAG,
         *,
         workload_id: int,
+        rank: int | None = None,
+        replica_id: int = 0,
+        num_ranks: int = 1,
     ) -> dict[str, Any]:
-        """Lower each mock op to one TimeoutKernel and remap dependencies."""
-        kernels: list[dict[str, Any]] = []
-        for op_idx, op in enumerate(op_dag.operators):
-            plan = lower_op(op)
-            deps: list[int] = []
-            seen: set[int] = set()
-            for dep_op in getattr(op, "deps", []):
-                if dep_op < 0 or dep_op >= op_idx:
-                    raise ValueError(
-                        f"Operator {getattr(op, 'name', op_idx)!r} has invalid dep "
-                        f"{dep_op} (must be earlier operator index)"
-                    )
-                if dep_op not in seen:
-                    seen.add(dep_op)
-                    deps.append(dep_op)
-            kernels.append(
-                {
-                    "name": plan.name,
-                    "duration": float(self.estimate_kernel_duration(plan)),
-                    "dependencies": deps,
-                }
-            )
-        return {
-            "workload_id": int(workload_id),
-            "kernels": kernels,
-        }
+        """Lower every op (compute and comm) to TimeoutKernels."""
+        return super().analyze(
+            op_dag,
+            workload_id=workload_id,
+            rank=rank,
+            replica_id=replica_id,
+            num_ranks=num_ranks,
+        )

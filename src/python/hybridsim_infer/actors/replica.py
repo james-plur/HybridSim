@@ -37,6 +37,7 @@ class ReplicaActor(ActorBase):
         replica_id: int = 0,
         cluster: Any = None,
         engine=None,
+        engines=None,
         kv_store: Any = None,
         kv_engine=None,
         kv_cache_manager: Optional[KvCacheManager] = None,
@@ -44,13 +45,17 @@ class ReplicaActor(ActorBase):
         workload_generator: Optional[InferWorkloadGenerator] = None,
         profile: Any = None,
     ) -> None:
-        if engine is None:
+        engine_list = list(engines) if engines is not None else None
+        if engine_list is None and engine is not None:
+            engine_list = [engine]
+        if not engine_list:
             raise ValueError("ReplicaActor requires an EngineActor")
 
         self._config = config
         self.replica_id = replica_id
         self._cluster = cluster
-        self._engine = engine
+        self._engines = engine_list
+        self._engine = engine_list[0]
         self._profile = profile
 
         kv_cfg = config.kv
@@ -77,6 +82,30 @@ class ReplicaActor(ActorBase):
             reserve_full_isl=sched_cfg.reserve_full_isl,
             enable_prefix_caching=prefix,
         )
+        ns = config.network_sim
+        compute_analyzer = None
+        comm_analyzer = None
+        num_ranks = 1
+        if iw.resolved_mode() == "op_level":
+            from hybridsim_infer.workload_generators.infer_workload_generator.op_level.analyzers import (
+                make_comm_analyzer,
+                make_compute_analyzer,
+            )
+
+            compute_analyzer = make_compute_analyzer(
+                op_level.compute_analyzer, op_level=op_level
+            )
+            comm_name = (op_level.comm_analyzer or "analytic").lower().strip()
+            if ns.enabled and comm_name in ("analytic", "analytical", "ab", "auto"):
+                comm_name = "ring"
+            if comm_name in ("ring", "ring_comm", "comm"):
+                num_ranks = ns.resolved_ranks(op_level.parallel)
+            comm_analyzer = make_comm_analyzer(
+                comm_name,
+                replica_id=int(replica_id),
+                num_ranks=num_ranks,
+            )
+
         self._workload_generator: InferWorkloadGenerator = (
             workload_generator
             or make_infer_workload_generator(
@@ -91,6 +120,10 @@ class ReplicaActor(ActorBase):
                 frontier_replica_id=int(batch.frontier.replica_id or 0),
                 frontier_is_moe=bool(batch.frontier.is_moe),
                 op_level_config=op_level,
+                compute_analyzer=compute_analyzer,
+                comm_analyzer=comm_analyzer,
+                replica_id=int(replica_id),
+                num_ranks=num_ranks,
             )
         )
 
@@ -103,7 +136,7 @@ class ReplicaActor(ActorBase):
         self._schedule_error: Optional[BaseException] = None
 
         self._worker = WorkerEngine(
-            engine,
+            engine_list,
             on_batch_complete=self._on_worker_complete,
             config=config,
         )
@@ -148,7 +181,7 @@ class ReplicaActor(ActorBase):
 
     def start(self) -> None:
         super().start()
-        self._engine.start()
+        self._worker.start()
         self._kv.start_client()
         # First RequestMsg / I/O completion arms the step loop.
 
@@ -156,8 +189,13 @@ class ReplicaActor(ActorBase):
         if self._schedule_error is not None:
             raise self._schedule_error
         super().check_error()
-        self._engine.check_error()
+        self._worker.check_error()
         self._kv.check_client_error()
+
+    def install_network(self, network, conf=None) -> None:
+        """Bind each rank engine to ``network`` at ``replica_id:rank``."""
+        for rank, eng in enumerate(self._engines):
+            eng.install_network(network, int(self.replica_id), int(rank))
 
     def _arm_step(self) -> None:
         """Debounce: at most one pending StepMsg. Worker-full waits for BatchEnd."""
@@ -331,6 +369,9 @@ class ReplicaActor(ActorBase):
             workload = self._workload_generator(result.batch, workload_id=wid)
             engine_start = float(self.sim.now())
             kernels = workload.get("kernels") or []
+            if not kernels and workload.get("per_rank"):
+                first = next(iter(workload["per_rank"].values()))
+                kernels = first.get("kernels") if isinstance(first, dict) else first
             duration_s = float(kernels[0].get("duration", 0.0)) if kernels else 0.0
             if self._profile is not None:
                 for req in result.batch.requests:

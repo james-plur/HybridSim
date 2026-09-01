@@ -1,4 +1,4 @@
-"""Native Actor-based inference simulation (NO_NETWORK skeleton)."""
+"""Native Actor-based inference simulation."""
 
 from hybridsim_infer.builder import InferenceSimulation, build_inference_simulation
 from hybridsim_infer.config import (
@@ -19,6 +19,7 @@ from hybridsim_infer.config import (
     ModelConfig,
     ModelSpec,
     NetworkConfig,
+    NetworkSimConfig,
     OpLevelConfig,
     OutputConfig,
     ParallelConfig,
@@ -72,6 +73,7 @@ __all__ = [
     "ModelConfig",
     "ModelSpec",
     "NetworkConfig",
+    "NetworkSimConfig",
     "OpLevelConfig",
     "OpLevelWorkloadGenerator",
     "OutputConfig",

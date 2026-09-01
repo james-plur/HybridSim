@@ -40,9 +40,9 @@ add_executable(dynamic_actor_test tests/dynamic_actor_test.cpp)
 target_link_libraries(dynamic_actor_test PRIVATE hybridsim)
 hybridsim_target_options(dynamic_actor_test)
 
-add_executable(engine_actor_tests tests/engine_actor_tests.cpp)
-target_link_libraries(engine_actor_tests PRIVATE hybridsim)
-hybridsim_target_options(engine_actor_tests)
+add_executable(network_tests tests/network_tests.cpp)
+target_link_libraries(network_tests PRIVATE hybridsim)
+hybridsim_target_options(network_tests)
 
 if(HYBRIDSIM_BUILD_EXAMPLES)
   add_executable(actor_ping_pong examples/actor_ping_pong.cpp)
@@ -56,7 +56,8 @@ if(HYBRIDSIM_BUILD_PYTHON)
   pybind11_add_module(hybridsim_py
     src/python/binding/bindings.cpp
     src/python/binding/bindings_common.cpp
-    src/python/binding/engine_bindings.cpp)
+    src/python/binding/engine_bindings.cpp
+    src/python/binding/network_bindings.cpp)
   target_link_libraries(hybridsim_py PRIVATE hybridsim)
   hybridsim_target_options(hybridsim_py)
 endif()
@@ -67,6 +68,7 @@ if(HYBRIDSIM_BUILD_TESTS)
   add_test(NAME actor_tests COMMAND actor_tests)
   add_test(NAME dynamic_actor_test COMMAND dynamic_actor_test)
   add_test(NAME engine_actor_tests COMMAND engine_actor_tests)
+  add_test(NAME network_tests COMMAND network_tests)
   if(HYBRIDSIM_BUILD_EXAMPLES)
     add_test(NAME actor_ping_pong COMMAND actor_ping_pong)
   endif()

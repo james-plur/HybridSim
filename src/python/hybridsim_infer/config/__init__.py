@@ -22,6 +22,7 @@ from hybridsim_infer.config.infer_workload import (
 from hybridsim_infer.config.kv import KvConfig, KvLookupConfig, KvStoreConfig
 from hybridsim_infer.config.kv_workload import KvWorkloadConfig
 from hybridsim_infer.config.model import ModelSpec
+from hybridsim_infer.config.network_sim import NetworkSimConfig
 from hybridsim_infer.config.output import ArtifactOutput, OutputConfig, RequestProfileOutput
 from hybridsim_infer.config.schedule import (
     ClusterScheduleConfig,
@@ -33,7 +34,7 @@ from hybridsim_infer.config.schedule import (
 
 @dataclass
 class InferenceConfig(SimulationConfig):
-    """NO_NETWORK inference config: nested topology / schedule / KV / workload / output."""
+    """Inference config: nested topology / schedule / KV / workload / optional fabric / output."""
 
     cluster: ClusterConfig = field(default_factory=ClusterConfig)
     schedule: ScheduleConfig = field(default_factory=ScheduleConfig)
@@ -41,6 +42,7 @@ class InferenceConfig(SimulationConfig):
     model: ModelSpec = field(default_factory=ModelSpec)
     infer_workload: InferWorkloadConfig = field(default_factory=InferWorkloadConfig)
     kv_workload: KvWorkloadConfig = field(default_factory=KvWorkloadConfig)
+    network_sim: NetworkSimConfig = field(default_factory=NetworkSimConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
 
     def validate(self) -> None:
@@ -66,6 +68,12 @@ class InferenceConfig(SimulationConfig):
         self.kv.resolved_store_block_size()
         self.infer_workload.resolved_mode()
         self.infer_workload.resolved_predictor()
+        if self.network_sim.enabled:
+            self.network_sim.resolved_topology()
+            self.network_sim.resolved_routing()
+            self.network_sim.resolved_layers()
+            self.network_sim.resolved_bw_policy()
+            self.network_sim.resolved_lb_policy()
 
     def resolved_cluster_type(self) -> str:
         return self.cluster.resolved_cluster_type()
@@ -105,6 +113,7 @@ __all__ = [
     "KvStoreConfig",
     "KvWorkloadConfig",
     "ModelSpec",
+    "NetworkSimConfig",
     "OutputConfig",
     "ReplicaScheduleConfig",
     "RequestProfileOutput",

@@ -168,7 +168,11 @@ class NetworkConfig:
 
 @dataclass
 class OpLevelConfig:
-    """Bundle of configs required by OpLevelWorkloadGenerator / AnalyticAnalyzer."""
+    """Bundle of configs required by OpLevelWorkloadGenerator.
+
+    ``compute_analyzer`` / ``comm_analyzer`` select lowering strategies
+    independently (see ``op_level.analyzers``).
+    """
 
     model: ModelConfig = field(default_factory=ModelConfig)
     parallel: ParallelConfig = field(default_factory=ParallelConfig)
@@ -176,6 +180,10 @@ class OpLevelConfig:
     network: NetworkConfig = field(default_factory=NetworkConfig)
     #: Optional global duration multiplier (set after offline calibration).
     duration_scale: float = 1.0
+    #: Compute-op lowering: ``analytic`` (Roofline / mem TimeoutKernel).
+    compute_analyzer: str = "analytic"
+    #: Comm-op lowering: ``analytic`` (α-β TimeoutKernel) or ``ring`` (Put/Wait).
+    comm_analyzer: str = "analytic"
 
     @classmethod
     def default(cls) -> OpLevelConfig:

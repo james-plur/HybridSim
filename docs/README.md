@@ -11,8 +11,9 @@
 | 集群 + 实例调度 | [scheduler.md](scheduler.md) | 分发拓扑、`schedule_step` 六个流程、与 vLLM V1 的对照与对齐测试 |
 | KV | [kv.md](kv.md) | 本地 APC、远端 Store、PD 控制面 lookup、传输时长 |
 | 计时 | [op_level_workload_generator.md](op_level_workload_generator.md) | batch → 算子 DAG → Roofline / α-β |
-| Engine | [engine.md](engine.md) | kernel DAG 执行、inflight 槽位、为什么只有 TimeoutKernel |
-| 配置 | [inference_config.md](inference_config.md) | 嵌套 `InferenceConfig` 的七个分组与字段 |
+| Engine | [engine.md](engine.md) | kernel DAG 执行、inflight 槽位、TimeoutKernel 与 comm kernel |
+| Network | [network.md](network.md) | 可选流级网络：Python 拓扑/路由、Adapter/Switch、Put/Wait、comm analyzer |
+| 配置 | [inference_config.md](inference_config.md) | 嵌套 `InferenceConfig` 的分组与字段 |
 
 ## 上手
 

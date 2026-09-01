@@ -1,4 +1,4 @@
-"""Op-level analytic analyzer: Roofline / α-β lowering of mock Operator DAGs."""
+"""Op-level analytic analyzer: Roofline / α-β TimeoutKernels for compute (and α-β comm)."""
 
 from hybridsim_infer.workload_generators.infer_workload_generator.op_level.analytic.analyzer import (
     AnalyticAnalyzer,

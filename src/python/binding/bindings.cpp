@@ -1,5 +1,6 @@
 #include "bindings_common.hpp"
 #include "engine_bindings.hpp"
+#include "network_bindings.hpp"
 
 #include <pybind11/eval.h>
 #include <pybind11/pybind11.h>
@@ -209,5 +210,6 @@ def __await__(self):
              hybridsim::python::check_actor_errors(*self);
            });
 
+  hybridsim::python::bind_network(m);
   hybridsim::python::bind_engine(m);
 }

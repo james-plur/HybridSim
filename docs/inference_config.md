@@ -43,10 +43,11 @@ infra.run()
 | `kv` | `KvConfig` | GPU 页/容量、APC、`enable_store`、`store` 容量、`lookup` 协议与控制面 RTT |
 | `model` | `ModelSpec` | `preset` 或显式 `ModelConfig`（infer DAG 与 KV 体积共用；显式 `config` 覆盖 preset） |
 | `infer_workload` | `InferWorkloadConfig` | `mode`：`batch_level`（fixed / token_proportional / frontier）或 `op_level`；`op` 为嵌套的 `OpLevelConfig`（`model` / `parallel` / `device` / `network` / `duration_scale`），默认 `OpLevelConfig()` |
-
-`infer_workload.op` 的类定义仍在 [`workload_generators/configs.py`](../src/python/hybridsim_infer/workload_generators/configs.py)，由 `InferWorkloadConfig` 嵌套持有并从 `hybridsim_infer.config` 再导出。`model.preset` / `model.config` 会在 `InferenceConfig.resolved_op_level()` 时写进 `op.model`（KV 体积与 op-level DAG 共用）。`op.network` 是 collective α-β，与 `kv_workload` 不是同一条链路。
 | `kv_workload` | `KvWorkloadConfig` | KV 数据面带宽 / α / 时长下限；与 op-level collective `NetworkConfig` 不是同一条链路 |
+| `network_sim` | `NetworkSimConfig` | 可选流级网络（默认 `enabled=False`）。字段：`topology`（`fattree` / `direct`，可注册扩展）、`routing`（`shortest_path`）、FatTree `layers` / leaf/spine 规模、`link_bandwidth_bps` / `link_delay_s`、`bw_policy`、`lb_policy`、`ranks_per_replica`。拓扑连线与路由表在 Python 层初始化。详见 [network.md](network.md) |
 | `output` | `OutputConfig` | `request_profile`（Chrome Trace）；可选 `metrics` / `requests` / `config_snapshot`（默认关） |
+
+`infer_workload.op` 的类定义仍在 [`workload_generators/configs.py`](../src/python/hybridsim_infer/workload_generators/configs.py)，由 `InferWorkloadConfig` 嵌套持有并从 `hybridsim_infer.config` 再导出。`model.preset` / `model.config` 会在 `InferenceConfig.resolved_op_level()` 时写进 `op.model`（KV 体积与 op-level DAG 共用）。`op.network` 是 collective α-β，与 `kv_workload` 不是同一条链路。`op.compute_analyzer` / `op.comm_analyzer` 分开选择计算与通信的 lowering（`analytic` / `ring`）。开启 `network_sim` 时 collective 改走 C++ fabric，α-β 不再用于这些 CommOp。
 
 平台字段 `build_dir` 仍在 `SimulationConfig` 上。已删除未使用的 `step_interval`。
 

@@ -1,4 +1,4 @@
-# Op-level workload generator
+# workload generator
 
 > **本层位置**：replica 内部的第三步（`schedule` → `kv` → `workload generator`），把已调度的 `ScheduleBatch` 变成 Engine 能跑的算子 DAG 与时长。全景见 [`architecture.md`](architecture.md)，DAG 如何被执行见 [`engine.md`](engine.md)。
 
@@ -54,4 +54,9 @@ class Attention(Module):
 
 ## Analyzer
 
-估时：`lower_op` 只读 `op.features()` + `op.kind`，不再按融合子类分支。`AnalyticAnalyzer` 按 kind 估时：Mem → `mem_scale * bytes / bw`；GEMM / FUSED → Roofline；Comm → α-β。新融合核只需加 `FusedOp` 子类。输出 TimeoutKernel DAG。
+估时：`lower_op` 只读 `op.features()` + `op.kind`，不再按融合子类分支。**计算**和**通信**可以配不同的 analyzer：
+
+- `AnalyticAnalyzer`（`compute_analyzer=analytic`）：Mem → `mem_scale * bytes / bw`；GEMM / FUSED → Roofline；若未挂 comm analyzer，Comm → α-β TimeoutKernel。
+- `RingCommAnalyzer`（`comm_analyzer=ring`）：只处理 `CommOp`，展开成 Put/Wait 等；计算 op 仍走 analytic。
+
+`OpLevelConfig.compute_analyzer` / `comm_analyzer` 分开选择。开启 [`network_sim`](network.md) 且 comm 仍为 analytic 时，自动改用 ring。新融合核只需加 `FusedOp` 子类。

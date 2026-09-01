@@ -1,4 +1,4 @@
-"""Assemble NO_NETWORK inference simulation topology."""
+"""Assemble inference simulation topology."""
 
 from __future__ import annotations
 
@@ -34,6 +34,7 @@ class InferenceSimulation:
     replicas: list[ReplicaActor]
     config: InferenceConfig
     kv_store: Optional[KvStoreActor] = None
+    network: Any = field(default=None, repr=False)
     profile: Any = field(default=None, repr=False)
 
     def schedule_arrivals(self, requests: list[InferenceRequest]) -> None:
@@ -146,18 +147,65 @@ def build_inference_simulation(
     if config.kv.enable_store:
         kv_store = sim.spawn_actor(KvStoreActor, config=config)
 
+    ns = config.network_sim
+    network = None
+    ranks = 1
+    if ns.enabled:
+        op_level = config.resolved_op_level()
+        ranks = ns.resolved_ranks(op_level.parallel)
+        n_replicas = config.cluster.resolved_num_replicas()
+        addrs = [
+            (rid, rank)
+            for rid in range(n_replicas)
+            for rank in range(ranks)
+        ]
+        network = sim.create_network(
+            addrs,
+            topology=ns.resolved_topology(),
+            routing=ns.resolved_routing(),
+            layers=ns.resolved_layers(),
+            num_leaf=int(ns.num_leaf),
+            num_spine=int(ns.num_spine),
+            leaf_downlinks=int(ns.leaf_downlinks),
+            leaf_uplinks=int(ns.leaf_uplinks),
+            link_bandwidth_bps=float(ns.link_bandwidth_bps),
+            link_delay_s=float(ns.link_delay_s),
+            bw_policy=ns.resolved_bw_policy(),
+            lb_policy=ns.resolved_lb_policy(),
+            seed=int(ns.seed),
+        )
+
     replicas: list[ReplicaActor] = []
     for rid in range(config.cluster.resolved_num_replicas()):
-        replica = sim.spawn_actor(
-            ReplicaActor,
-            config=config,
-            replica_id=rid,
-            cluster=cluster,
-            engine=sim.create_engine_actor(),
-            kv_store=kv_store,
-            kv_engine=(sim.create_engine_actor() if config.kv.enable_store else None),
-            profile=profile_arg,
-        )
+        if network is not None:
+            engines = [sim.create_engine_actor() for _ in range(ranks)]
+            for rank, eng in enumerate(engines):
+                eng.install_network(network, rid, rank)
+            replica = sim.spawn_actor(
+                ReplicaActor,
+                config=config,
+                replica_id=rid,
+                cluster=cluster,
+                engines=engines,
+                kv_store=kv_store,
+                kv_engine=(
+                    sim.create_engine_actor() if config.kv.enable_store else None
+                ),
+                profile=profile_arg,
+            )
+        else:
+            replica = sim.spawn_actor(
+                ReplicaActor,
+                config=config,
+                replica_id=rid,
+                cluster=cluster,
+                engine=sim.create_engine_actor(),
+                kv_store=kv_store,
+                kv_engine=(
+                    sim.create_engine_actor() if config.kv.enable_store else None
+                ),
+                profile=profile_arg,
+            )
         replicas.append(replica)
 
     cluster.set_replicas(replicas)
@@ -167,5 +215,6 @@ def build_inference_simulation(
         replicas=replicas,
         config=config,
         kv_store=kv_store,
+        network=network,
         profile=profile,
     )

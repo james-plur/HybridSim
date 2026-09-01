@@ -41,6 +41,11 @@ def make_infer_workload_generator(
     parallel_config: Any = None,
     device_config: Any = None,
     network_config: Any = None,
+    compute_analyzer: Any = None,
+    comm_analyzer: Any = None,
+    comm_parser: Any = None,
+    replica_id: int = 0,
+    num_ranks: int = 1,
 ) -> InferWorkloadGenerator:
     """Build an infer workload generator.
 
@@ -64,6 +69,11 @@ def make_infer_workload_generator(
             parallel_config=parallel_config,
             device_config=device_config,
             network_config=network_config,
+            compute_analyzer=compute_analyzer,
+            comm_analyzer=comm_analyzer,
+            comm_parser=comm_parser,
+            replica_id=replica_id,
+            num_ranks=num_ranks,
         )
     if mode != "batch_level":
         raise ValueError(
@@ -124,14 +134,25 @@ def _make_op_level_workload_generator(
     parallel_config: Any,
     device_config: Any,
     network_config: Any,
+    compute_analyzer: Any = None,
+    comm_analyzer: Any = None,
+    comm_parser: Any = None,
+    replica_id: int = 0,
+    num_ranks: int = 1,
 ) -> InferWorkloadGenerator:
     from hybridsim_infer.workload_generators.configs import OpLevelConfig
     from hybridsim_infer.workload_generators.infer_workload_generator.op_level.generator import (
         OpLevelWorkloadGenerator,
     )
 
+    kwargs = {
+        "compute_analyzer": compute_analyzer,
+        "comm_analyzer": comm_analyzer if comm_analyzer is not None else comm_parser,
+        "replica_id": replica_id,
+        "num_ranks": num_ranks,
+    }
     if isinstance(op_level_config, OpLevelConfig):
-        return OpLevelWorkloadGenerator(op_level=op_level_config)
+        return OpLevelWorkloadGenerator(op_level=op_level_config, **kwargs)
     if op_level_config is not None:
         raise TypeError(
             "op_level_config must be OpLevelConfig or None, "
@@ -142,6 +163,7 @@ def _make_op_level_workload_generator(
         parallel=parallel_config,
         device=device_config,
         network=network_config,
+        **kwargs,
     )
 
 
