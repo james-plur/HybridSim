@@ -298,7 +298,7 @@ CLI：`PYTHONPATH=src/python:tests:. python -m schedule_alignment.run_case --cas
 
 1. 实现 `InferenceScheduler`（`schedule_step` + `on_batch_complete`）  
 2. `SchedulerFactory.register("sglang", SgLangFramework)`  
-3. `InferenceConfig(framework="sglang")` 或 case JSON `"framework": "sglang"`  
+3. `InferenceConfig(schedule=ScheduleConfig(replica=ReplicaScheduleConfig(name="sglang")))` 或 case JSON `"framework": "sglang"`  
 4. 另写 `sglang_schedule_driver`（截获该框架 schedule 输出），ledger schema 可共用  
 
 hybridsim 对齐的是**调度决策序列**，不是把 vLLM 嵌进仿真器；`VllmScheduler` 是按 vLLM 语义手写的仿真模型，用真实 `Scheduler` offline 跑分做回归。

@@ -4,27 +4,29 @@ Native Actor-based inference on hybridsim. Corresponds to
 `hybridsimdesign/基于actor系统的推理仿真设计.md` and
 `hybridsimdesign/hybridsim inference offline校准.md` (**NO_NETWORK**).
 
-## Layout vs design doc
+架构总览（各层职责、数据流、现状边界）：**[`docs/architecture.md`](../../docs/architecture.md)**；文档索引：[`docs/README.md`](../../docs/README.md)。本文只讲怎么跑。
 
-| Design | Package |
-|--------|---------|
-| ClusterActor | `hybridsim_infer.actors.ClusterActor` |
-| ClusterManager | `hybridsim_infer.cluster`（`Monolith` / `Pd`） |
-| ReplicaActor | `hybridsim_infer.actors.ReplicaActor`（同构，无角色） |
-| WorkerEngine | `hybridsim_infer.actors.WorkerEngine` |
-| KV Store / KV Client | `KvStoreActor` + `KvClient`（`enable_kv_client=True`） |
-| schedule / batch | `hybridsim_infer.schedulers`（默认 `VllmScheduler`；`SchedulerFactory` 可扩展） |
-| Request arrivals | `hybridsim_infer.request_generators`（`List` / ServeGen → `schedule_arrivals`） |
-| Fake GPU duration | `hybridsim_infer.workload_generators`（`fixed` / `token_proportional` / `predict`） |
-| Request profile | `hybridsim.request_profile`（独立进程写 Chrome Trace JSON → `profile/`） |
+## 分层与代码
+
+| 分层 | 代码 | 文档 |
+|------|------|------|
+| 请求生成 | `hybridsim_infer.request_generators`（List / ServeGen / KV trace → `schedule_arrivals`） | [request_generation.md](../../docs/request_generation.md) |
+| 集群分发 | `ClusterActor` + `hybridsim_infer.cluster`（`Monolith` / `Pd`） | [scheduler.md](../../docs/scheduler.md) |
+| 实例调度 | `ReplicaActor`（同构，无角色）+ `hybridsim_infer.schedulers`（默认 `VllmScheduler`） | [scheduler.md](../../docs/scheduler.md) |
+| KV | `VllmKvCacheManager`、`KvClient`、`KvStoreActor`（`kv.enable_store=True`） | [kv.md](../../docs/kv.md) |
+| 计时 | `hybridsim_infer.workload_generators`（`batch_level` / `op_level`） | [op_level_workload_generator.md](../../docs/op_level_workload_generator.md) |
+| Engine 执行 | `WorkerEngine` + 平台 `EngineActor`（`TimeoutKernel` DAG） | [engine.md](../../docs/engine.md) |
+| 观测 | `hybridsim.request_profile`（独立进程写 Chrome Trace JSON → `profile/`） | 见下节 |
 
 **RequestGenerator vs InferWorkloadGenerator**：前者生成带 `arrived_at` 的 `InferenceRequest` 序列并注入 ClusterActor；后者把已调度的 `ScheduleBatch` 变成 Engine TimeoutKernel。ServeGen 虽自称 workload generator，在本项目中只作为请求到达/长度采样后端。
 
-请求生成专项文档（数据来源、KV 轨迹生成、数据结构）：[`docs/request_generation.md`](../../docs/request_generation.md)。
+配置分组（cluster / schedule / kv / model / workload / output）：[`docs/inference_config.md`](../../docs/inference_config.md)。
 
 ## Request profile（Chrome Trace）
 
-`InferenceConfig(enable_request_profile=True)` 时，仿真在**子进程**收集事件并写出 JSON（默认 `<repo>/profile/request_profile.json`，目录已 gitignore）。
+`InferenceConfig(output=OutputConfig(request_profile=RequestProfileOutput(enabled=True)))` 时，仿真在**子进程**收集事件并写出 JSON（默认 `<repo>/profile/request_profile.json`，目录已 gitignore）。
+
+嵌套字段说明见 [`docs/inference_config.md`](../../docs/inference_config.md)。
 
 轨道：
 
@@ -46,18 +48,18 @@ PYTHONPATH=src/python:. python examples/inference/pd_multipool_profile_demo.py
 
 CLI：`--enable_request_profile` / `--request_profile_path` / `--request_profile_dir`。
 
-## Topology（`cluster_type`）
+## Topology（`cluster.type`）
 
 | 类型 | 行为 |
 |------|------|
 | `monolith` | 全副本 least-load；请求无 PD 盖章 |
 | `pd` | Prefill 池 / Decode 池 least-load；arrive 盖 `do_remote_decode`；handoff 盖 `do_remote_prefill` + `remote_replica_id=源P` |
 
-PD 配置：`num_prefill_replicas` / `num_decode_replicas`（总副本 = 二者之和）。Replica **不**区分身份，行为只看请求字段。
+PD 配置：`ClusterConfig(type="pd", num_prefill_replicas=..., num_decode_replicas=...)`（总副本 = 二者之和）。Replica **不**区分身份，行为只看请求字段。
 
 ## Mooncake-style KV（交互骨架）
 
-对齐 **调度阶段**（非真 RDMA / mooncake_master）：
+对齐 **调度阶段**（非真 RDMA / mooncake_master）；本地 APC / Store / PD 控制面三条路径的完整说明见 [`docs/kv.md`](../../docs/kv.md)：
 
 | 组件 | 职责 |
 |------|------|
@@ -70,9 +72,9 @@ PD 配置：`num_prefill_replicas` / `num_decode_replicas`（总副本 = 二者�
 | Save（若启用 Store） | BatchEnd → `save` → `submit_push`（PD Prefill 与 Monolith 均可） |
 | Prefill handoff + prefix | handoff 前 `cache_prefix`，同 prompt 后续请求可在 P 池本地命中 |
 
-配置：`cluster_type`、`enable_kv_client`、`model_preset`（KV 体积从 preset YAML 计算）、`kv_lookup_async`、`kv_lookup_rtt_s`、`kv_bandwidth_gbps`、`kv_transfer_s`。
+配置：`cluster.type`、`kv.enable_store`、`model.preset`（KV 体积从 preset YAML 计算）、`kv.lookup.async_`、`kv.lookup.rtt_s`、`kv_workload.bandwidth_gbps`、`kv_workload.transfer_s_floor`。
 
-**Store 正交于拓扑**：PD / Monolith 均可 `enable_kv_client=True` 挂共享 Store。
+**Store 正交于拓扑**：PD / Monolith 均可 `kv.enable_store=True` 挂共享 Store。
 
 **非目标**：真 bootstrap 端口、TransferEngine RDMA、与 vLLM 相同的 block hash、Prefill 侧 push 算子。
 
@@ -114,13 +116,13 @@ PYTHONHASHSEED=0 PYTHONPATH=src/python:tests:. \
   python tests/test_mooncake_alignment.py -v
 ```
 
-`InferenceConfig(duration_mode="batch_level", batch_predictor="token_proportional")` 时 batch 时长 ∝ prefill/decode token 数。
+`InferenceConfig(infer_workload=InferWorkloadConfig(mode="batch_level", batch=BatchLevelConfig(predictor="token_proportional")))` 时 batch 时长 ∝ prefill/decode token 数。
 
-`InferenceConfig(framework="vllm")` 选择 replica 内调度实现；扩展时实现 `InferenceScheduler` 子类并 `SchedulerFactory.register("sglang", …)`。
+`InferenceConfig(schedule=ScheduleConfig(replica=ReplicaScheduleConfig(name="vllm")))` 选择 replica 内调度实现；扩展时实现 `InferenceScheduler` 子类并 `SchedulerFactory.register("sglang", …)`。
 
 ### PD + prefix demo 要点
 
-`pd_disagg_prefix_demo.py`：`cluster_type=pd`、1P+1D、`enable_prefix_caching=True`。
+`pd_disagg_prefix_demo.py`：`cluster.type=pd`、1P+1D、`kv.enable_prefix_caching=True`。
 
 1. 请求进 Prefill 池 → 算完 handoff → Decode 控制面 lookup + pull → decode  
 2. 同 prompt 的后续请求可在 Prefill 侧命中本地 prefix cache  

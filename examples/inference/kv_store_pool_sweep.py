@@ -198,53 +198,24 @@ def read_mem_available_gb() -> tuple[float, float]:
     return avail_kb / (1024.0 * 1024.0), total_kb / (1024.0 * 1024.0)
 
 
-def summarize_metrics(
-    finished: list[Any],
-    *,
-    n_scheduled: int,
-    sim_now: float,
-) -> dict[str, Any]:
-    if not finished:
-        return {
-            "mean_ttft_s": None,
-            "tps": 0.0,
-            "hit_rate": 0.0,
-            "n_finished": 0,
-            "n_scheduled": int(n_scheduled),
-            "sim_now_s": float(sim_now),
-            "prefill_tokens": 0,
-            "prefix_hit_tokens": 0,
-        }
-    ttfts: list[float] = []
-    for req in finished:
-        finished_at = getattr(req, "finished_at", None)
-        if finished_at is None:
-            continue
-        ttfts.append(float(finished_at) - float(req.arrived_at))
-    prefill = sum(int(req.num_prefill_tokens) for req in finished)
-    hits = sum(int(getattr(req, "prefix_hit_tokens", 0) or 0) for req in finished)
-    t0 = min(float(req.arrived_at) for req in finished)
-    t1 = max(
-        float(getattr(req, "finished_at", None) or t0) for req in finished
-    )
-    span = max(t1 - t0, 1e-12)
-    return {
-        "mean_ttft_s": (sum(ttfts) / len(ttfts)) if ttfts else None,
-        "tps": float(prefill) / span,
-        "hit_rate": (float(hits) / float(prefill)) if prefill else 0.0,
-        "n_finished": len(finished),
-        "n_scheduled": int(n_scheduled),
-        "sim_now_s": float(sim_now),
-        "prefill_tokens": int(prefill),
-        "prefix_hit_tokens": int(hits),
-    }
-
-
 def run_cell(payload: dict[str, Any]) -> dict[str, Any]:
     """Worker entry: build one simulation from scalar args (do not pickle actors)."""
     try:
-        from hybridsim_infer import InferenceConfig, build_inference_simulation
+        from hybridsim_infer import (
+            ClusterConfig,
+            InferWorkloadConfig,
+            InferenceConfig,
+            KvConfig,
+            KvLookupConfig,
+            KvStoreConfig,
+            KvWorkloadConfig,
+            ModelSpec,
+            ReplicaScheduleConfig,
+            ScheduleConfig,
+            build_inference_simulation,
+        )
         from hybridsim_infer.request_generators import KvCacheTraceRequestGenerator
+        from hybridsim_infer.results import summarize_metrics
         from hybridsim_infer.workload_generators.configs import (
             DeviceConfig,
             OpLevelConfig,
@@ -281,28 +252,30 @@ def run_cell(payload: dict[str, Any]) -> dict[str, Any]:
             parallel=ParallelConfig(),
         )
         cfg = InferenceConfig(
-            cluster_type="monolith",
-            num_replicas=1,
-            duration_mode="op_level",
-            model_preset=model_preset,
-            op_level_config=op_level,
-            enable_kv_client=True,
-            enable_prefix_caching=True,
-            block_size=BLOCK_SIZE,
-            store_block_size=BLOCK_SIZE,
-            num_gpu_blocks=gpu_blocks,
-            kv_store_blocks=store_blocks,
-            kv_bandwidth_gbps=bandwidth_gbps,
-            kv_latency_s=0.0,
-            kv_transfer_s=1e-6,
-            kv_lookup_async=False,
-            kv_lookup_rtt_s=1e-4,
-            tokens_per_step=8192,
-            max_num_scheduled_tokens=8192,
-            max_num_running_reqs=16,
-            step_interval=1e-4,
-            reserve_full_isl=True,
-            enable_request_profile=False,
+            cluster=ClusterConfig(type="monolith", num_replicas=1),
+            schedule=ScheduleConfig(
+                replica=ReplicaScheduleConfig(
+                    tokens_per_step=8192,
+                    max_num_scheduled_tokens=8192,
+                    max_num_running_reqs=16,
+                    reserve_full_isl=True,
+                ),
+            ),
+            kv=KvConfig(
+                enable_store=True,
+                enable_prefix_caching=True,
+                block_size=BLOCK_SIZE,
+                num_gpu_blocks=gpu_blocks,
+                store=KvStoreConfig(block_size=BLOCK_SIZE, num_blocks=store_blocks),
+                lookup=KvLookupConfig(async_=False, rtt_s=1e-4),
+            ),
+            model=ModelSpec(preset=model_preset),
+            infer_workload=InferWorkloadConfig(mode="op_level", op=op_level),
+            kv_workload=KvWorkloadConfig(
+                bandwidth_gbps=bandwidth_gbps,
+                latency_s=0.0,
+                transfer_s_floor=1e-6,
+            ),
         )
         infra = build_inference_simulation(cfg)
         gen = KvCacheTraceRequestGenerator(

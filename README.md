@@ -5,12 +5,20 @@
 ## 结构
 
 ```text
-src/hybridsim/          C++ Actor / Engine 核心
-src/python/binding/     pybind11 → hybridsim_py
-src/python/hybridsim/   平台 Python 包（Simulation / Config / ActorBase，无 Frontier）
-examples/frontier/      用平台复现 Frontier 调度的实施例（见该目录 README）
-tests/                  平台测试
+src/hybridsim/            C++ Actor / Engine 核心
+src/python/binding/       pybind11 → hybridsim_py
+src/python/hybridsim/     平台 Python 包（Simulation / Config / ActorBase，无 Frontier）
+src/python/hybridsim_infer/  LLM 推理仿真（Cluster / Replica / KV / workload generator）
+docs/                     推理仿真文档（见 docs/README.md）
+examples/frontier/        用平台复现 Frontier 调度的实施例（见该目录 README）
+tests/                    平台测试
 ```
+
+## 推理仿真
+
+`hybridsim_infer` 在本平台上搭了一套 LLM serving 仿真：请求生成 → 集群分发 → 实例调度 + KV → 算子 DAG → Engine 执行。
+
+架构总览与分层文档入口：**[docs/README.md](docs/README.md)**（从 [docs/architecture.md](docs/architecture.md) 读起）。跑 demo 见 [examples/inference/README.md](examples/inference/README.md)。
 
 ## 依赖获取策略
 

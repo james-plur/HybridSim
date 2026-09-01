@@ -12,8 +12,13 @@ if str(_PY) not in sys.path:
     sys.path.insert(0, str(_PY))
 
 from hybridsim_infer import (
+    ClusterConfig,
+    InferWorkloadConfig,
     InferenceConfig,
     InferenceRequest,
+    KvConfig,
+    ReplicaScheduleConfig,
+    ScheduleConfig,
     build_inference_simulation,
 )
 from hybridsim_infer.workload_generators import (
@@ -43,19 +48,19 @@ class TestSharedModelPreset(unittest.TestCase):
 
 class TestOpLevelE2E(unittest.TestCase):
     def test_op_level_preset_simulation_completes(self) -> None:
-        cfg = InferenceConfig(
-            num_replicas=1,
-            step_interval=1e-3,
-            duration_mode="op_level",
-            model_preset="llama-3.1-8b",
-            tokens_per_step=8,
-            decode_tokens_per_step=1,
-            max_num_scheduled_tokens=64,
-        )
         op_level = resolve_op_level_config(model_preset="llama-3.1-8b")
         op_level.model.num_layers = 2
-        cfg.op_level_config = op_level
-        cfg.model_preset = None
+        cfg = InferenceConfig(
+            cluster=ClusterConfig(num_replicas=1),
+            schedule=ScheduleConfig(
+                replica=ReplicaScheduleConfig(
+                    tokens_per_step=8,
+                    decode_tokens_per_step=1,
+                    max_num_scheduled_tokens=64,
+                ),
+            ),
+            infer_workload=InferWorkloadConfig(mode="op_level", op=op_level),
+        )
 
         infra = build_inference_simulation(cfg)
         req = InferenceRequest(
@@ -74,16 +79,20 @@ class TestOpLevelE2E(unittest.TestCase):
         op_level = resolve_op_level_config(model_preset="llama-3.1-8b")
         op_level.model.num_layers = 2
         cfg = InferenceConfig(
-            num_replicas=1,
-            step_interval=1e-3,
-            duration_mode="op_level",
-            op_level_config=op_level,
-            enable_prefix_caching=True,
-            block_size=8,
-            num_gpu_blocks=128,
-            tokens_per_step=8,
-            decode_tokens_per_step=1,
-            max_num_scheduled_tokens=64,
+            cluster=ClusterConfig(num_replicas=1),
+            schedule=ScheduleConfig(
+                replica=ReplicaScheduleConfig(
+                    tokens_per_step=8,
+                    decode_tokens_per_step=1,
+                    max_num_scheduled_tokens=64,
+                ),
+            ),
+            kv=KvConfig(
+                enable_prefix_caching=True,
+                block_size=8,
+                num_gpu_blocks=128,
+            ),
+            infer_workload=InferWorkloadConfig(mode="op_level", op=op_level),
         )
         infra = build_inference_simulation(cfg)
         kv = infra.replicas[0]._kv

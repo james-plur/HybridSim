@@ -11,7 +11,24 @@ from hybridsim.request_profile import (
     RequestProfileSession,
     create_request_profile_session,
 )
-from hybridsim_infer import InferenceConfig, InferenceRequest, build_inference_simulation
+from hybridsim_infer import (
+    BatchFixedConfig,
+    BatchLevelConfig,
+    BatchTokenProportionalConfig,
+    ClusterConfig,
+    InferWorkloadConfig,
+    InferenceConfig,
+    InferenceRequest,
+    KvConfig,
+    KvLookupConfig,
+    KvWorkloadConfig,
+    ModelSpec,
+    OutputConfig,
+    ReplicaScheduleConfig,
+    RequestProfileOutput,
+    ScheduleConfig,
+    build_inference_simulation,
+)
 
 
 def _load_profile(path: Path) -> dict:
@@ -49,13 +66,19 @@ class TestRequestProfileMonolith(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "mono.json"
             cfg = InferenceConfig(
-                num_replicas=1,
-                step_interval=1e-3,
-                dummy_exec_s=0.02,
-                tokens_per_step=8,
-                max_num_scheduled_tokens=64,
-                enable_request_profile=True,
-                request_profile_path=out,
+                cluster=ClusterConfig(num_replicas=1),
+                schedule=ScheduleConfig(
+                    replica=ReplicaScheduleConfig(
+                        tokens_per_step=8,
+                        max_num_scheduled_tokens=64,
+                    ),
+                ),
+                infer_workload=InferWorkloadConfig(
+                    batch=BatchLevelConfig(fixed=BatchFixedConfig(dummy_exec_s=0.02)),
+                ),
+                output=OutputConfig(
+                    request_profile=RequestProfileOutput(enabled=True, path=out),
+                ),
             )
             infra = build_inference_simulation(cfg)
             infra.schedule_arrivals(
@@ -144,28 +167,44 @@ class TestRequestProfilePdKv(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "pd.json"
             cfg = InferenceConfig(
-                cluster_type="pd",
-                num_prefill_replicas=1,
-                num_decode_replicas=1,
-                enable_kv_client=True,
-                enable_prefix_caching=False,
-                model_preset="llama-3.1-8b",
-                block_size=8,
-                num_gpu_blocks=256,
-                tokens_per_step=8,
-                decode_tokens_per_step=1,
-                max_num_scheduled_tokens=64,
-                step_interval=1e-3,
-                dummy_exec_s=0.01,
-                kv_transfer_s=1e-4,
-                kv_bandwidth_gbps=100.0,
-                kv_lookup_rtt_s=1e-3,
-                duration_mode="batch_level",
-                batch_predictor="token_proportional",
-                prefill_s_per_token=5e-5,
-                decode_s_per_token=2e-4,
-                enable_request_profile=True,
-                request_profile_path=out,
+                cluster=ClusterConfig(
+                    type="pd",
+                    num_prefill_replicas=1,
+                    num_decode_replicas=1,
+                ),
+                schedule=ScheduleConfig(
+                    replica=ReplicaScheduleConfig(
+                        tokens_per_step=8,
+                        decode_tokens_per_step=1,
+                        max_num_scheduled_tokens=64,
+                    ),
+                ),
+                kv=KvConfig(
+                    enable_store=True,
+                    enable_prefix_caching=False,
+                    block_size=8,
+                    num_gpu_blocks=256,
+                    lookup=KvLookupConfig(rtt_s=1e-3),
+                ),
+                model=ModelSpec(preset="llama-3.1-8b"),
+                infer_workload=InferWorkloadConfig(
+                    mode="batch_level",
+                    batch=BatchLevelConfig(
+                        predictor="token_proportional",
+                        fixed=BatchFixedConfig(dummy_exec_s=0.01),
+                        token_proportional=BatchTokenProportionalConfig(
+                            prefill_s_per_token=5e-5,
+                            decode_s_per_token=2e-4,
+                        ),
+                    ),
+                ),
+                kv_workload=KvWorkloadConfig(
+                    bandwidth_gbps=100.0,
+                    transfer_s_floor=1e-4,
+                ),
+                output=OutputConfig(
+                    request_profile=RequestProfileOutput(enabled=True, path=out),
+                ),
             )
             infra = build_inference_simulation(cfg)
             prompt = list(range(16))

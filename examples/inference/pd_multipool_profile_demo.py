@@ -14,8 +14,20 @@ from __future__ import annotations
 
 from hybridsim.request_profile import default_profile_dir
 from hybridsim_infer import (
+    BatchLevelConfig,
+    BatchTokenProportionalConfig,
+    ClusterConfig,
+    InferWorkloadConfig,
     InferenceConfig,
     InferenceRequest,
+    KvConfig,
+    KvLookupConfig,
+    KvWorkloadConfig,
+    ModelSpec,
+    OutputConfig,
+    ReplicaScheduleConfig,
+    RequestProfileOutput,
+    ScheduleConfig,
     build_inference_simulation,
 )
 
@@ -33,28 +45,47 @@ def main() -> None:
     prompt_d = shared_prefix + suffix_c
 
     cfg = InferenceConfig(
-        cluster_type="pd",
-        num_prefill_replicas=2,
-        num_decode_replicas=2,
-        enable_kv_client=True,
-        enable_prefix_caching=True,
-        model_preset="llama-3.1-8b",
-        block_size=block_size,
-        num_gpu_blocks=512,
-        tokens_per_step=8,
-        decode_tokens_per_step=1,
-        max_num_scheduled_tokens=64,
-        max_num_running_reqs=16,
-        step_interval=1e-3,
-        kv_transfer_s=1e-4,
-        kv_bandwidth_gbps=50.0,
-        kv_lookup_rtt_s=1e-3,
-        duration_mode="batch_level",
-        batch_predictor="token_proportional",
-        prefill_s_per_token=5e-5,
-        decode_s_per_token=2e-4,
-        enable_request_profile=True,
-        request_profile_path=default_profile_dir() / "pd_multipool_profile_demo.json",
+        cluster=ClusterConfig(
+            type="pd",
+            num_prefill_replicas=2,
+            num_decode_replicas=2,
+        ),
+        schedule=ScheduleConfig(
+            replica=ReplicaScheduleConfig(
+                tokens_per_step=8,
+                decode_tokens_per_step=1,
+                max_num_scheduled_tokens=64,
+                max_num_running_reqs=16,
+            ),
+        ),
+        kv=KvConfig(
+            enable_store=True,
+            enable_prefix_caching=True,
+            block_size=block_size,
+            num_gpu_blocks=512,
+            lookup=KvLookupConfig(rtt_s=1e-3),
+        ),
+        model=ModelSpec(preset="llama-3.1-8b"),
+        infer_workload=InferWorkloadConfig(
+            mode="batch_level",
+            batch=BatchLevelConfig(
+                predictor="token_proportional",
+                token_proportional=BatchTokenProportionalConfig(
+                    prefill_s_per_token=5e-5,
+                    decode_s_per_token=2e-4,
+                ),
+            ),
+        ),
+        kv_workload=KvWorkloadConfig(
+            bandwidth_gbps=50.0,
+            transfer_s_floor=1e-4,
+        ),
+        output=OutputConfig(
+            request_profile=RequestProfileOutput(
+                enabled=True,
+                path=default_profile_dir() / "pd_multipool_profile_demo.json",
+            ),
+        ),
     )
     infra = build_inference_simulation(cfg)
     assert len(infra.replicas) == 4
@@ -108,7 +139,8 @@ def main() -> None:
 
     print("=== PD multipool profile demo (2P+2D, KV, prefix) ===")
     print(
-        f"replicas={len(infra.replicas)} profile={cfg.request_profile_path}"
+        f"replicas={len(infra.replicas)} "
+        f"profile={cfg.output.request_profile.path}"
     )
     infra.schedule_arrivals(requests)
     infra.run()

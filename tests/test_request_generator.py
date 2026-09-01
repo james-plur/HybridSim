@@ -7,9 +7,17 @@ from dataclasses import dataclass
 from typing import Any
 
 from hybridsim_infer import (
+    BatchFixedConfig,
+    BatchLevelConfig,
+    BatchTokenProportionalConfig,
+    ClusterConfig,
+    InferWorkloadConfig,
     InferenceConfig,
     InferenceRequest,
+    KvConfig,
     ListRequestGenerator,
+    ReplicaScheduleConfig,
+    ScheduleConfig,
     build_inference_simulation,
     map_servegen_request,
 )
@@ -46,11 +54,16 @@ class TestListRequestGenerator(unittest.TestCase):
 
     def test_schedule_from_generator(self) -> None:
         cfg = InferenceConfig(
-            num_replicas=1,
-            step_interval=1e-3,
-            dummy_exec_s=0.01,
-            tokens_per_step=8,
-            max_num_scheduled_tokens=64,
+            cluster=ClusterConfig(num_replicas=1),
+            schedule=ScheduleConfig(
+                replica=ReplicaScheduleConfig(
+                    tokens_per_step=8,
+                    max_num_scheduled_tokens=64,
+                ),
+            ),
+            infer_workload=InferWorkloadConfig(
+                batch=BatchLevelConfig(fixed=BatchFixedConfig(dummy_exec_s=0.01)),
+            ),
         )
         infra = build_inference_simulation(cfg)
         reqs = [
@@ -127,16 +140,25 @@ class TestServeGenRequestGenerator(unittest.TestCase):
 
     def test_short_simulation(self) -> None:
         cfg = InferenceConfig(
-            num_replicas=1,
-            step_interval=1e-3,
-            duration_mode="batch_level",
-            batch_predictor="token_proportional",
-            prefill_s_per_token=1e-5,
-            decode_s_per_token=1e-4,
-            tokens_per_step=64,
-            max_num_scheduled_tokens=256,
-            max_num_running_reqs=16,
-            num_gpu_blocks=4096,
+            cluster=ClusterConfig(num_replicas=1),
+            schedule=ScheduleConfig(
+                replica=ReplicaScheduleConfig(
+                    tokens_per_step=64,
+                    max_num_scheduled_tokens=256,
+                    max_num_running_reqs=16,
+                ),
+            ),
+            kv=KvConfig(num_gpu_blocks=4096),
+            infer_workload=InferWorkloadConfig(
+                mode="batch_level",
+                batch=BatchLevelConfig(
+                    predictor="token_proportional",
+                    token_proportional=BatchTokenProportionalConfig(
+                        prefill_s_per_token=1e-5,
+                        decode_s_per_token=1e-4,
+                    ),
+                ),
+            ),
         )
         infra = build_inference_simulation(cfg)
         gen = ServeGenRequestGenerator(

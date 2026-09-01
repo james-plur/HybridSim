@@ -3,29 +3,45 @@
 
 from __future__ import annotations
 
+from hybridsim.request_profile import default_profile_dir
 from hybridsim_infer import (
+    BatchFixedConfig,
+    BatchLevelConfig,
+    ClusterConfig,
+    InferWorkloadConfig,
     InferenceConfig,
     InferenceRequest,
+    KvConfig,
+    KvWorkloadConfig,
+    OutputConfig,
+    ReplicaScheduleConfig,
+    RequestProfileOutput,
+    ScheduleConfig,
     build_inference_simulation,
 )
 
 
 def main() -> None:
     cfg = InferenceConfig(
-        num_replicas=1,
-        step_interval=1e-3,
-        dummy_exec_s=0.02,
-        tokens_per_step=8,
-        max_num_scheduled_tokens=64,
-        enable_kv_client=True,
-        kv_transfer_s=0.015,
-        enable_request_profile=True,
-        request_profile_path=None,  # → <repo>/profile/request_profile.json
+        cluster=ClusterConfig(num_replicas=1),
+        schedule=ScheduleConfig(
+            replica=ReplicaScheduleConfig(
+                tokens_per_step=8,
+                max_num_scheduled_tokens=64,
+            ),
+        ),
+        kv=KvConfig(enable_store=True),
+        infer_workload=InferWorkloadConfig(
+            batch=BatchLevelConfig(fixed=BatchFixedConfig(dummy_exec_s=0.02)),
+        ),
+        kv_workload=KvWorkloadConfig(transfer_s_floor=0.015),
+        output=OutputConfig(
+            request_profile=RequestProfileOutput(
+                enabled=True,
+                path=default_profile_dir() / "monolithic_demo.json",
+            ),
+        ),
     )
-    # Distinct file so demos do not clobber each other.
-    from hybridsim.request_profile import default_profile_dir
-
-    cfg.request_profile_path = default_profile_dir() / "monolithic_demo.json"
     infra = build_inference_simulation(cfg)
 
     shared_prompt = [100, 101, 102, 103, 104, 105, 106, 107]

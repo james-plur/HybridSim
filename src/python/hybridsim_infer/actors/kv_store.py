@@ -9,6 +9,7 @@ from typing import Any, Callable, Optional
 
 from hybridsim import ActorBase, on
 
+from hybridsim_infer.config import InferenceConfig
 from hybridsim_infer.kv_system.block_keys import (
     block_aligned_tokens,
     block_keys_from_tokens,
@@ -32,13 +33,16 @@ class KvStoreActor(ActorBase):
         sim,
         hs_actor,
         message_types: dict[str, Any],
-        num_blocks: int = 4096,
-        block_size: int = 16,
-        gpu_block_size: int | None = None,
+        config: InferenceConfig,
         store: Optional[KvStoreBackend] = None,
         profile_fn: Optional[PoolEventFn] = None,
         profile_step_fn: Optional[Callable[[], int]] = None,
     ) -> None:
+        kv = config.kv
+        gpu_block_size = int(kv.block_size)
+        block_size = kv.resolved_store_block_size()
+        num_blocks = int(kv.store.num_blocks)
+        self._config = config
         self.store: KvStoreBackend = store or MooncakeKvStore(
             num_blocks=num_blocks,
             block_size=block_size,
@@ -51,7 +55,7 @@ class KvStoreActor(ActorBase):
         self.num_blocks = int(getattr(self.store, "num_blocks", num_blocks))
         self.block_size = int(self.store.block_size)
         self.gpu_block_size = int(
-            getattr(self.store, "gpu_block_size", gpu_block_size or block_size)
+            getattr(self.store, "gpu_block_size", gpu_block_size)
         )
         self.store_factor = int(getattr(self.store, "store_factor", 1) or 1)
         super().__init__(sim=sim, hs_actor=hs_actor, message_types=message_types)

@@ -3,29 +3,50 @@
 
 from __future__ import annotations
 
+from hybridsim.request_profile import default_profile_dir
 from hybridsim_infer import (
+    BatchLevelConfig,
+    BatchTokenProportionalConfig,
+    ClusterConfig,
+    InferWorkloadConfig,
     InferenceConfig,
+    KvConfig,
+    OutputConfig,
+    ReplicaScheduleConfig,
+    RequestProfileOutput,
+    ScheduleConfig,
     ServeGenRequestGenerator,
     build_inference_simulation,
 )
 
 
 def main() -> None:
-    from hybridsim.request_profile import default_profile_dir
-
     cfg = InferenceConfig(
-        num_replicas=1,
-        step_interval=1e-3,
-        duration_mode="batch_level",
-        batch_predictor="token_proportional",
-        prefill_s_per_token=1e-5,
-        decode_s_per_token=1e-4,
-        tokens_per_step=64,
-        max_num_scheduled_tokens=256,
-        max_num_running_reqs=32,
-        num_gpu_blocks=4096,
-        enable_request_profile=True,
-        request_profile_path=default_profile_dir() / "servegen_demo.json",
+        cluster=ClusterConfig(num_replicas=1),
+        schedule=ScheduleConfig(
+            replica=ReplicaScheduleConfig(
+                tokens_per_step=64,
+                max_num_scheduled_tokens=256,
+                max_num_running_reqs=32,
+            ),
+        ),
+        kv=KvConfig(num_gpu_blocks=4096),
+        infer_workload=InferWorkloadConfig(
+            mode="batch_level",
+            batch=BatchLevelConfig(
+                predictor="token_proportional",
+                token_proportional=BatchTokenProportionalConfig(
+                    prefill_s_per_token=1e-5,
+                    decode_s_per_token=1e-4,
+                ),
+            ),
+        ),
+        output=OutputConfig(
+            request_profile=RequestProfileOutput(
+                enabled=True,
+                path=default_profile_dir() / "servegen_demo.json",
+            ),
+        ),
     )
     infra = build_inference_simulation(cfg)
 

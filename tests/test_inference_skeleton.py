@@ -6,8 +6,18 @@ import asyncio
 import unittest
 
 from hybridsim_infer import (
+    BatchFixedConfig,
+    BatchLevelConfig,
+    ClusterConfig,
+    EngineConfig,
+    InferWorkloadConfig,
     InferenceConfig,
     InferenceRequest,
+    KvConfig,
+    KvLookupConfig,
+    KvWorkloadConfig,
+    ReplicaScheduleConfig,
+    ScheduleConfig,
     VllmScheduler,
     build_inference_simulation,
 )
@@ -19,17 +29,24 @@ from hybridsim_infer.request import RequestStatus
 
 class TestInferenceSkeleton(unittest.TestCase):
     def test_message_registration(self) -> None:
-        infra = build_inference_simulation(InferenceConfig(num_replicas=1))
+        infra = build_inference_simulation(
+            InferenceConfig(cluster=ClusterConfig(num_replicas=1))
+        )
         for cls in INFER_MESSAGE_TYPES:
             self.assertIn(cls.__name__, infra.sim.message_types)
 
     def test_single_request_completes(self) -> None:
         cfg = InferenceConfig(
-            num_replicas=1,
-            step_interval=1e-3,
-            dummy_exec_s=0.01,
-            tokens_per_step=8,
-            decode_tokens_per_step=1,
+            cluster=ClusterConfig(num_replicas=1),
+            schedule=ScheduleConfig(
+                replica=ReplicaScheduleConfig(
+                    tokens_per_step=8,
+                    decode_tokens_per_step=1,
+                ),
+            ),
+            infer_workload=InferWorkloadConfig(
+                batch=BatchLevelConfig(fixed=BatchFixedConfig(dummy_exec_s=0.01)),
+            ),
         )
         infra = build_inference_simulation(cfg)
         req = InferenceRequest(
@@ -46,10 +63,13 @@ class TestInferenceSkeleton(unittest.TestCase):
 
     def test_multi_replica_round_robinish(self) -> None:
         cfg = InferenceConfig(
-            num_replicas=2,
-            step_interval=1e-3,
-            dummy_exec_s=0.01,
-            tokens_per_step=8,
+            cluster=ClusterConfig(num_replicas=2),
+            schedule=ScheduleConfig(
+                replica=ReplicaScheduleConfig(tokens_per_step=8),
+            ),
+            infer_workload=InferWorkloadConfig(
+                batch=BatchLevelConfig(fixed=BatchFixedConfig(dummy_exec_s=0.01)),
+            ),
         )
         infra = build_inference_simulation(cfg)
         requests = [
@@ -70,12 +90,19 @@ class TestInferenceSkeleton(unittest.TestCase):
         """Worker full → wait BatchEnd; never send delayed StepMsg."""
         dummy_exec_s = 0.1
         cfg = InferenceConfig(
-            num_replicas=1,
-            step_interval=1e-4,
-            dummy_exec_s=dummy_exec_s,
-            tokens_per_step=8,
-            decode_tokens_per_step=1,
-            max_inflight_batches=1,
+            cluster=ClusterConfig(num_replicas=1),
+            schedule=ScheduleConfig(
+                replica=ReplicaScheduleConfig(
+                    tokens_per_step=8,
+                    decode_tokens_per_step=1,
+                ),
+                engine=EngineConfig(max_inflight_batches=1),
+            ),
+            infer_workload=InferWorkloadConfig(
+                batch=BatchLevelConfig(
+                    fixed=BatchFixedConfig(dummy_exec_s=dummy_exec_s)
+                ),
+            ),
         )
         infra = build_inference_simulation(cfg)
         replica = infra.replicas[0]
@@ -103,12 +130,17 @@ class TestInferenceSkeleton(unittest.TestCase):
     def test_chunked_prefill_wakes_on_batch_end(self) -> None:
         """max_inflight=1 chunked prefill still advances after each BatchEnd."""
         cfg = InferenceConfig(
-            num_replicas=1,
-            step_interval=1e-3,
-            dummy_exec_s=0.01,
-            tokens_per_step=8,
-            decode_tokens_per_step=1,
-            max_inflight_batches=1,
+            cluster=ClusterConfig(num_replicas=1),
+            schedule=ScheduleConfig(
+                replica=ReplicaScheduleConfig(
+                    tokens_per_step=8,
+                    decode_tokens_per_step=1,
+                ),
+                engine=EngineConfig(max_inflight_batches=1),
+            ),
+            infer_workload=InferWorkloadConfig(
+                batch=BatchLevelConfig(fixed=BatchFixedConfig(dummy_exec_s=0.01)),
+            ),
         )
         infra = build_inference_simulation(cfg)
         req = InferenceRequest(
@@ -126,14 +158,19 @@ class TestInferenceSkeleton(unittest.TestCase):
     def test_pipelined_inflight_still_completes(self) -> None:
         """Spare engine slots are filled by same-tick re-arm (max_inflight > 1)."""
         cfg = InferenceConfig(
-            num_replicas=1,
-            step_interval=1e-3,
-            dummy_exec_s=0.01,
-            tokens_per_step=8,
-            decode_tokens_per_step=1,
-            max_inflight_batches=2,
-            max_num_running_reqs=8,
-            max_num_scheduled_tokens=64,
+            cluster=ClusterConfig(num_replicas=1),
+            schedule=ScheduleConfig(
+                replica=ReplicaScheduleConfig(
+                    tokens_per_step=8,
+                    decode_tokens_per_step=1,
+                    max_num_running_reqs=8,
+                    max_num_scheduled_tokens=64,
+                ),
+                engine=EngineConfig(max_inflight_batches=2),
+            ),
+            infer_workload=InferWorkloadConfig(
+                batch=BatchLevelConfig(fixed=BatchFixedConfig(dummy_exec_s=0.01)),
+            ),
         )
         infra = build_inference_simulation(cfg)
         requests = [
@@ -323,14 +360,18 @@ class TestKvClientPath(unittest.TestCase):
         # One full block (block_size=8) so Mooncake-style hit is non-zero.
         prompt = list(range(10, 18))
         cfg = InferenceConfig(
-            num_replicas=1,
-            enable_kv_client=True,
-            step_interval=1e-3,
-            dummy_exec_s=0.01,
-            kv_transfer_s=1e-4,
-            kv_bandwidth_gbps=100.0,
-            block_size=8,
-            tokens_per_step=8,
+            cluster=ClusterConfig(num_replicas=1),
+            schedule=ScheduleConfig(
+                replica=ReplicaScheduleConfig(tokens_per_step=8),
+            ),
+            kv=KvConfig(enable_store=True, block_size=8),
+            infer_workload=InferWorkloadConfig(
+                batch=BatchLevelConfig(fixed=BatchFixedConfig(dummy_exec_s=0.01)),
+            ),
+            kv_workload=KvWorkloadConfig(
+                bandwidth_gbps=100.0,
+                transfer_s_floor=1e-4,
+            ),
         )
         infra = build_inference_simulation(cfg)
         assert infra.kv_store is not None
@@ -355,14 +396,18 @@ class TestKvClientPath(unittest.TestCase):
     def test_save_then_second_request_hits(self) -> None:
         prompt = list(range(20, 28))
         cfg = InferenceConfig(
-            num_replicas=1,
-            enable_kv_client=True,
-            step_interval=1e-3,
-            dummy_exec_s=0.01,
-            kv_transfer_s=1e-4,
-            kv_bandwidth_gbps=100.0,
-            block_size=8,
-            tokens_per_step=8,
+            cluster=ClusterConfig(num_replicas=1),
+            schedule=ScheduleConfig(
+                replica=ReplicaScheduleConfig(tokens_per_step=8),
+            ),
+            kv=KvConfig(enable_store=True, block_size=8),
+            infer_workload=InferWorkloadConfig(
+                batch=BatchLevelConfig(fixed=BatchFixedConfig(dummy_exec_s=0.01)),
+            ),
+            kv_workload=KvWorkloadConfig(
+                bandwidth_gbps=100.0,
+                transfer_s_floor=1e-4,
+            ),
         )
         infra = build_inference_simulation(cfg)
         r1 = InferenceRequest(
@@ -392,16 +437,22 @@ class TestKvClientPath(unittest.TestCase):
     def test_async_lookup_then_pull(self) -> None:
         prompt = list(range(30, 38))
         cfg = InferenceConfig(
-            num_replicas=1,
-            enable_kv_client=True,
-            kv_lookup_async=True,
-            kv_lookup_rtt_s=0.005,
-            step_interval=1e-3,
-            dummy_exec_s=0.01,
-            kv_transfer_s=1e-4,
-            kv_bandwidth_gbps=100.0,
-            block_size=8,
-            tokens_per_step=8,
+            cluster=ClusterConfig(num_replicas=1),
+            schedule=ScheduleConfig(
+                replica=ReplicaScheduleConfig(tokens_per_step=8),
+            ),
+            kv=KvConfig(
+                enable_store=True,
+                block_size=8,
+                lookup=KvLookupConfig(async_=True, rtt_s=0.005),
+            ),
+            infer_workload=InferWorkloadConfig(
+                batch=BatchLevelConfig(fixed=BatchFixedConfig(dummy_exec_s=0.01)),
+            ),
+            kv_workload=KvWorkloadConfig(
+                bandwidth_gbps=100.0,
+                transfer_s_floor=1e-4,
+            ),
         )
         infra = build_inference_simulation(cfg)
         assert infra.kv_store is not None
@@ -428,14 +479,19 @@ class TestKvClientPath(unittest.TestCase):
         miss_prompt = list(range(80, 88))
         pull_s = 0.1
         cfg = InferenceConfig(
-            num_replicas=1,
-            enable_kv_client=True,
-            dummy_exec_s=0.01,
-            kv_transfer_s=pull_s,
-            kv_bandwidth_gbps=100.0,
-            block_size=8,
-            tokens_per_step=8,
-            max_inflight_batches=1,
+            cluster=ClusterConfig(num_replicas=1),
+            schedule=ScheduleConfig(
+                replica=ReplicaScheduleConfig(tokens_per_step=8),
+                engine=EngineConfig(max_inflight_batches=1),
+            ),
+            kv=KvConfig(enable_store=True, block_size=8),
+            infer_workload=InferWorkloadConfig(
+                batch=BatchLevelConfig(fixed=BatchFixedConfig(dummy_exec_s=0.01)),
+            ),
+            kv_workload=KvWorkloadConfig(
+                bandwidth_gbps=100.0,
+                transfer_s_floor=pull_s,
+            ),
         )
         infra = build_inference_simulation(cfg)
         assert infra.kv_store is not None
@@ -478,16 +534,26 @@ class TestKvClientPath(unittest.TestCase):
         prompt = list(range(90, 98))
         pull_s = 0.05
         cfg = InferenceConfig(
-            num_replicas=1,
-            enable_kv_client=True,
-            dummy_exec_s=0.01,
-            kv_transfer_s=pull_s,
-            kv_bandwidth_gbps=100.0,
-            block_size=8,
-            tokens_per_step=8,
-            num_gpu_blocks=2,
-            reserve_full_isl=True,
-            max_inflight_batches=1,
+            cluster=ClusterConfig(num_replicas=1),
+            kv=KvConfig(
+                enable_store=True,
+                block_size=8,
+                num_gpu_blocks=2,
+            ),
+            infer_workload=InferWorkloadConfig(
+                batch=BatchLevelConfig(fixed=BatchFixedConfig(dummy_exec_s=0.01)),
+            ),
+            kv_workload=KvWorkloadConfig(
+                bandwidth_gbps=100.0,
+                transfer_s_floor=pull_s,
+            ),
+            schedule=ScheduleConfig(
+                replica=ReplicaScheduleConfig(
+                    tokens_per_step=8,
+                    reserve_full_isl=True,
+                ),
+                engine=EngineConfig(max_inflight_batches=1),
+            ),
         )
         infra = build_inference_simulation(cfg)
         assert infra.kv_store is not None
@@ -533,16 +599,26 @@ class TestKvClientPath(unittest.TestCase):
         full_prompt = hit_prompt + list(range(400, 408))
         pull_s = 0.02
         cfg = InferenceConfig(
-            num_replicas=1,
-            enable_kv_client=True,
-            dummy_exec_s=0.01,
-            kv_transfer_s=pull_s,
-            kv_bandwidth_gbps=100.0,
-            block_size=8,
-            tokens_per_step=8,
-            num_gpu_blocks=3,
-            reserve_full_isl=True,
-            max_inflight_batches=1,
+            cluster=ClusterConfig(num_replicas=1),
+            schedule=ScheduleConfig(
+                replica=ReplicaScheduleConfig(
+                    tokens_per_step=8,
+                    reserve_full_isl=True,
+                ),
+                engine=EngineConfig(max_inflight_batches=1),
+            ),
+            kv=KvConfig(
+                enable_store=True,
+                block_size=8,
+                num_gpu_blocks=3,
+            ),
+            infer_workload=InferWorkloadConfig(
+                batch=BatchLevelConfig(fixed=BatchFixedConfig(dummy_exec_s=0.01)),
+            ),
+            kv_workload=KvWorkloadConfig(
+                bandwidth_gbps=100.0,
+                transfer_s_floor=pull_s,
+            ),
         )
         infra = build_inference_simulation(cfg)
         assert infra.kv_store is not None
@@ -573,16 +649,26 @@ class TestKvClientPath(unittest.TestCase):
         pull_s = 0.05
         last_arrival = 0.0
         cfg = InferenceConfig(
-            num_replicas=1,
-            enable_kv_client=True,
-            dummy_exec_s=0.01,
-            kv_transfer_s=pull_s,
-            kv_bandwidth_gbps=100.0,
-            block_size=8,
-            tokens_per_step=8,
-            num_gpu_blocks=2,
-            reserve_full_isl=True,
-            max_inflight_batches=1,
+            cluster=ClusterConfig(num_replicas=1),
+            kv=KvConfig(
+                enable_store=True,
+                block_size=8,
+                num_gpu_blocks=2,
+            ),
+            infer_workload=InferWorkloadConfig(
+                batch=BatchLevelConfig(fixed=BatchFixedConfig(dummy_exec_s=0.01)),
+            ),
+            kv_workload=KvWorkloadConfig(
+                bandwidth_gbps=100.0,
+                transfer_s_floor=pull_s,
+            ),
+            schedule=ScheduleConfig(
+                replica=ReplicaScheduleConfig(
+                    tokens_per_step=8,
+                    reserve_full_isl=True,
+                ),
+                engine=EngineConfig(max_inflight_batches=1),
+            ),
         )
         infra = build_inference_simulation(cfg)
         assert infra.kv_store is not None
@@ -633,16 +719,26 @@ class TestKvClientPath(unittest.TestCase):
         n = 16
         pull_s = 0.01
         cfg = InferenceConfig(
-            num_replicas=1,
-            enable_kv_client=True,
-            dummy_exec_s=0.005,
-            kv_transfer_s=pull_s,
-            kv_bandwidth_gbps=100.0,
-            block_size=8,
-            tokens_per_step=8,
-            num_gpu_blocks=2,
-            reserve_full_isl=True,
-            max_inflight_batches=1,
+            cluster=ClusterConfig(num_replicas=1),
+            schedule=ScheduleConfig(
+                replica=ReplicaScheduleConfig(
+                    tokens_per_step=8,
+                    reserve_full_isl=True,
+                ),
+                engine=EngineConfig(max_inflight_batches=1),
+            ),
+            kv=KvConfig(
+                enable_store=True,
+                block_size=8,
+                num_gpu_blocks=2,
+            ),
+            infer_workload=InferWorkloadConfig(
+                batch=BatchLevelConfig(fixed=BatchFixedConfig(dummy_exec_s=0.005)),
+            ),
+            kv_workload=KvWorkloadConfig(
+                bandwidth_gbps=100.0,
+                transfer_s_floor=pull_s,
+            ),
         )
         infra = build_inference_simulation(cfg)
         assert infra.kv_store is not None
@@ -689,16 +785,26 @@ class TestKvClientPath(unittest.TestCase):
         n = 6
         pull_s = 0.02
         cfg = InferenceConfig(
-            num_replicas=1,
-            enable_kv_client=True,
-            dummy_exec_s=0.005,
-            kv_transfer_s=pull_s,
-            kv_bandwidth_gbps=100.0,
-            block_size=8,
-            tokens_per_step=8,
-            num_gpu_blocks=64,
-            reserve_full_isl=True,
-            max_inflight_batches=1,
+            cluster=ClusterConfig(num_replicas=1),
+            schedule=ScheduleConfig(
+                replica=ReplicaScheduleConfig(
+                    tokens_per_step=8,
+                    reserve_full_isl=True,
+                ),
+                engine=EngineConfig(max_inflight_batches=1),
+            ),
+            kv=KvConfig(
+                enable_store=True,
+                block_size=8,
+                num_gpu_blocks=64,
+            ),
+            infer_workload=InferWorkloadConfig(
+                batch=BatchLevelConfig(fixed=BatchFixedConfig(dummy_exec_s=0.005)),
+            ),
+            kv_workload=KvWorkloadConfig(
+                bandwidth_gbps=100.0,
+                transfer_s_floor=pull_s,
+            ),
         )
         infra = build_inference_simulation(cfg)
         assert infra.kv_store is not None
@@ -754,17 +860,26 @@ class TestKvClientPath(unittest.TestCase):
     def test_pd_handoff_decode_rdma(self) -> None:
         prompt = list(range(40, 48))
         cfg = InferenceConfig(
-            cluster_type="pd",
-            num_prefill_replicas=1,
-            num_decode_replicas=1,
-            enable_kv_client=True,
-            kv_lookup_rtt_s=0.002,
-            step_interval=1e-3,
-            dummy_exec_s=0.01,
-            kv_transfer_s=1e-4,
-            kv_bandwidth_gbps=100.0,
-            block_size=8,
-            tokens_per_step=8,
+            cluster=ClusterConfig(
+                type="pd",
+                num_prefill_replicas=1,
+                num_decode_replicas=1,
+            ),
+            schedule=ScheduleConfig(
+                replica=ReplicaScheduleConfig(tokens_per_step=8),
+            ),
+            kv=KvConfig(
+                enable_store=True,
+                block_size=8,
+                lookup=KvLookupConfig(rtt_s=0.002),
+            ),
+            infer_workload=InferWorkloadConfig(
+                batch=BatchLevelConfig(fixed=BatchFixedConfig(dummy_exec_s=0.01)),
+            ),
+            kv_workload=KvWorkloadConfig(
+                bandwidth_gbps=100.0,
+                transfer_s_floor=1e-4,
+            ),
         )
         infra = build_inference_simulation(cfg)
         self.assertIsNotNone(infra.kv_store)
@@ -792,17 +907,26 @@ class TestKvClientPath(unittest.TestCase):
         """Decode control-plane lookup ignores Store hash hits (still RTT + pull)."""
         prompt = list(range(50, 58))
         cfg = InferenceConfig(
-            cluster_type="pd",
-            num_prefill_replicas=1,
-            num_decode_replicas=1,
-            enable_kv_client=True,
-            kv_lookup_rtt_s=0.003,
-            step_interval=1e-3,
-            dummy_exec_s=0.01,
-            kv_transfer_s=1e-4,
-            kv_bandwidth_gbps=100.0,
-            block_size=8,
-            tokens_per_step=8,
+            cluster=ClusterConfig(
+                type="pd",
+                num_prefill_replicas=1,
+                num_decode_replicas=1,
+            ),
+            schedule=ScheduleConfig(
+                replica=ReplicaScheduleConfig(tokens_per_step=8),
+            ),
+            kv=KvConfig(
+                enable_store=True,
+                block_size=8,
+                lookup=KvLookupConfig(rtt_s=0.003),
+            ),
+            infer_workload=InferWorkloadConfig(
+                batch=BatchLevelConfig(fixed=BatchFixedConfig(dummy_exec_s=0.01)),
+            ),
+            kv_workload=KvWorkloadConfig(
+                bandwidth_gbps=100.0,
+                transfer_s_floor=1e-4,
+            ),
         )
         infra = build_inference_simulation(cfg)
         assert infra.kv_store is not None
@@ -822,7 +946,7 @@ class TestKvClientPath(unittest.TestCase):
         done = infra.finished_requests[0]
         self.assertTrue(done.completed)
         # Control-plane RTT must advance sim time beyond a zero-delay hash hit.
-        self.assertGreaterEqual(infra.now - t0, cfg.kv_lookup_rtt_s)
+        self.assertGreaterEqual(infra.now - t0, cfg.kv.lookup.rtt_s)
         params = done.kv_transfer_params or {}
         self.assertEqual(params.get("remote_replica_id"), 0)
 
@@ -860,14 +984,18 @@ class TestKvClientPath(unittest.TestCase):
 
         # Full DES: 2P+2D cluster completes multiple requests.
         cfg = InferenceConfig(
-            cluster_type="pd",
-            num_prefill_replicas=2,
-            num_decode_replicas=2,
-            enable_kv_client=True,
-            step_interval=1e-3,
-            dummy_exec_s=0.01,
-            block_size=8,
-            tokens_per_step=8,
+            cluster=ClusterConfig(
+                type="pd",
+                num_prefill_replicas=2,
+                num_decode_replicas=2,
+            ),
+            schedule=ScheduleConfig(
+                replica=ReplicaScheduleConfig(tokens_per_step=8),
+            ),
+            kv=KvConfig(enable_store=True, block_size=8),
+            infer_workload=InferWorkloadConfig(
+                batch=BatchLevelConfig(fixed=BatchFixedConfig(dummy_exec_s=0.01)),
+            ),
         )
         infra = build_inference_simulation(cfg)
         self.assertEqual(len(infra.replicas), 4)
@@ -891,11 +1019,14 @@ class TestKvClientPath(unittest.TestCase):
 
     def test_local_prefix_reuse(self) -> None:
         cfg = InferenceConfig(
-            num_replicas=1,
-            step_interval=1e-3,
-            dummy_exec_s=0.01,
-            tokens_per_step=16,
-            enable_prefix_caching=True,
+            cluster=ClusterConfig(num_replicas=1),
+            schedule=ScheduleConfig(
+                replica=ReplicaScheduleConfig(tokens_per_step=16),
+            ),
+            kv=KvConfig(enable_prefix_caching=True),
+            infer_workload=InferWorkloadConfig(
+                batch=BatchLevelConfig(fixed=BatchFixedConfig(dummy_exec_s=0.01)),
+            ),
         )
         infra = build_inference_simulation(cfg)
         prompt = [1, 2, 3, 4, 5, 6, 7, 8]

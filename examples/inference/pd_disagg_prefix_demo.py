@@ -15,9 +15,23 @@ ClusterManager. Store may be enabled alongside PD (orthogonal).
 
 from __future__ import annotations
 
+from hybridsim.request_profile import default_profile_dir
 from hybridsim_infer import (
+    BatchFixedConfig,
+    BatchLevelConfig,
+    BatchTokenProportionalConfig,
+    ClusterConfig,
+    InferWorkloadConfig,
     InferenceConfig,
     InferenceRequest,
+    KvConfig,
+    KvLookupConfig,
+    KvWorkloadConfig,
+    ModelSpec,
+    OutputConfig,
+    ReplicaScheduleConfig,
+    RequestProfileOutput,
+    ScheduleConfig,
     build_inference_simulation,
 )
 
@@ -33,33 +47,50 @@ def main() -> None:
     prompt_partial = shared_prefix + suffix_b  # shares first 16 tokens only
 
     cfg = InferenceConfig(
-        cluster_type="pd",
-        num_prefill_replicas=1,
-        num_decode_replicas=1,
-        enable_kv_client=True,
-        enable_prefix_caching=True,
-        model_preset="llama-3.1-8b",
-        block_size=block_size,
-        num_gpu_blocks=256,
-        tokens_per_step=8,
-        decode_tokens_per_step=1,
-        max_num_scheduled_tokens=64,
-        step_interval=1e-3,
-        dummy_exec_s=0.01,
-        kv_transfer_s=1e-4,
-        kv_bandwidth_gbps=100.0,
-        kv_lookup_rtt_s=1e-3,
-        duration_mode="batch_level",
-        batch_predictor="token_proportional",
-        prefill_s_per_token=5e-5,
-        decode_s_per_token=2e-4,
-        enable_request_profile=True,
+        cluster=ClusterConfig(
+            type="pd",
+            num_prefill_replicas=1,
+            num_decode_replicas=1,
+        ),
+        schedule=ScheduleConfig(
+            replica=ReplicaScheduleConfig(
+                tokens_per_step=8,
+                decode_tokens_per_step=1,
+                max_num_scheduled_tokens=64,
+            ),
+        ),
+        kv=KvConfig(
+            enable_store=True,
+            enable_prefix_caching=True,
+            block_size=block_size,
+            num_gpu_blocks=256,
+            lookup=KvLookupConfig(rtt_s=1e-3),
+        ),
+        model=ModelSpec(preset="llama-3.1-8b"),
+        infer_workload=InferWorkloadConfig(
+            mode="batch_level",
+            batch=BatchLevelConfig(
+                predictor="token_proportional",
+                fixed=BatchFixedConfig(dummy_exec_s=0.01),
+                token_proportional=BatchTokenProportionalConfig(
+                    prefill_s_per_token=5e-5,
+                    decode_s_per_token=2e-4,
+                ),
+            ),
+        ),
+        kv_workload=KvWorkloadConfig(
+            bandwidth_gbps=100.0,
+            transfer_s_floor=1e-4,
+        ),
+        output=OutputConfig(
+            request_profile=RequestProfileOutput(
+                enabled=True,
+                path=default_profile_dir() / "pd_disagg_prefix_demo.json",
+            ),
+        ),
     )
-    from hybridsim.request_profile import default_profile_dir
-
-    cfg.request_profile_path = default_profile_dir() / "pd_disagg_prefix_demo.json"
     infra = build_inference_simulation(cfg)
-    assert infra.kv_store is not None  # enable_kv_client wires shared Store
+    assert infra.kv_store is not None  # kv.enable_store wires shared Store
     assert len(infra.replicas) == 2
 
     requests = [
@@ -90,7 +121,8 @@ def main() -> None:
 
     print("=== PD disagg + prefix cache demo ===")
     print(
-        f"cluster_type=pd P={cfg.num_prefill_replicas} D={cfg.num_decode_replicas} "
+        f"cluster_type=pd P={cfg.cluster.num_prefill_replicas} "
+        f"D={cfg.cluster.num_decode_replicas} "
         f"block_size={block_size} prefix_caching=on store=on"
     )
     print(

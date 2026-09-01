@@ -1,5 +1,7 @@
 # hybridsim 请求生成
 
+> **本层位置**：五层结构里最上面的流量层，决定「什么时候来多少请求、每条多长、前缀怎么共享」，不决定执行时长。全景见 [`architecture.md`](architecture.md)。
+
 请求进入仿真的统一实体是 `InferenceRequest`（`hybridsim_infer/request.py`）。  
 三种生成方式都产出 `list[InferenceRequest]`，再经 `schedule_arrivals` / `schedule_from_generator` 注入 `ClusterActor`。
 
@@ -55,15 +57,19 @@
 
 ## 2. 基本用法
 
+配置字段分组、嵌套构造与旧字段对照：[inference_config.md](inference_config.md)。
+
 统一接线：
 
 ```python
-from hybridsim_infer import InferenceConfig, build_inference_simulation
+from hybridsim_infer import InferenceConfig, ClusterConfig, build_inference_simulation
 
-sim = build_inference_simulation(InferenceConfig(...))
+sim = build_inference_simulation(InferenceConfig(cluster=ClusterConfig(num_replicas=1)))
 sim.schedule_from_generator(gen)   # 或 sim.schedule_arrivals(reqs)
 sim.run()
 ```
+
+配置字段树见 [`inference_config.md`](inference_config.md)。请求生成不进 `InferenceConfig`。
 
 ### 2.1 List：手写 / 单测 / Demo
 

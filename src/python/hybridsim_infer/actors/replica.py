@@ -7,6 +7,7 @@ from typing import Any, Optional
 from hybridsim import ActorBase, on
 
 from hybridsim_infer.actors.worker_engine import WorkerEngine
+from hybridsim_infer.config import InferenceConfig, NetworkConfig
 from hybridsim_infer.schedulers import SchedulerFactory, InferenceScheduler
 from hybridsim_infer.kv_system import KvCacheManager, KvClient, VllmKvCacheManager
 from hybridsim_infer.messages import (
@@ -32,76 +33,64 @@ class ReplicaActor(ActorBase):
         sim,
         hs_actor,
         message_types: dict[str, Any],
+        config: InferenceConfig,
         replica_id: int = 0,
         cluster: Any = None,
         engine=None,
-        kv_cache_manager: Optional[KvCacheManager] = None,
         kv_store: Any = None,
         kv_engine=None,
+        kv_cache_manager: Optional[KvCacheManager] = None,
         scheduler: Optional[InferenceScheduler] = None,
-        step_interval: float = 1e-3,
-        dummy_exec_s: float = 0.05,
-        kv_transfer_s: float = 1e-4,
-        kv_bandwidth_gbps: float = 50.0,
-        kv_bytes_per_token: float | None = None,
-        kv_latency_s: float = 0.0,
-        kv_lookup_async: bool = False,
-        kv_lookup_rtt_s: float = 1e-3,
-        tokens_per_step: int = 8,
-        decode_tokens_per_step: int = 1,
-        max_num_scheduled_tokens: int = 64,
-        max_num_running_reqs: int = 32,
-        max_inflight_batches: int = 1,
-        long_prefill_token_threshold: int = 0,
-        reserve_full_isl: bool = True,
-        enable_prefix_caching: bool = False,
-        scheduler_name: str = "vllm",
-        duration_mode: str = "batch_level",
-        batch_predictor: str = "fixed",
-        prefill_s_per_token: float = 1e-4,
-        decode_s_per_token: float = 1e-3,
-        duration_base_s: float = 0.0,
-        duration_predictor: Any = None,
-        frontier_predictor: Any = None,
-        frontier_cluster_type: Any = None,
-        frontier_replica_id: int = 0,
-        frontier_is_moe: bool = False,
-        op_level_config: Any = None,
         workload_generator: Optional[InferWorkloadGenerator] = None,
         profile: Any = None,
     ) -> None:
+        if engine is None:
+            raise ValueError("ReplicaActor requires an EngineActor")
+
+        self._config = config
         self.replica_id = replica_id
         self._cluster = cluster
         self._engine = engine
         self._profile = profile
-        self._step_interval = float(step_interval)  # unused; event-driven steps
-        self._dummy_exec_s = float(dummy_exec_s)
-        self._max_num_scheduled_tokens = int(max_num_scheduled_tokens)
-        self._max_num_running_reqs = int(max_num_running_reqs)
-        self._kv: KvCacheManager = kv_cache_manager or VllmKvCacheManager()
+
+        kv_cfg = config.kv
+        sched_cfg = config.schedule.replica
+        iw = config.infer_workload
+        batch = iw.batch
+        kv_wl = config.kv_workload
+        op_level = config.resolved_op_level()
+        prefix = bool(kv_cfg.enable_prefix_caching)
+
+        self._max_num_scheduled_tokens = int(sched_cfg.max_num_scheduled_tokens)
+        self._max_num_running_reqs = int(sched_cfg.max_num_running_reqs)
+        self._kv: KvCacheManager = kv_cache_manager or VllmKvCacheManager(
+            num_gpu_blocks=kv_cfg.num_gpu_blocks,
+            block_size=kv_cfg.block_size,
+            store_block_size=kv_cfg.resolved_store_block_size(),
+            enable_prefix_caching=prefix,
+        )
         self._scheduler = scheduler or SchedulerFactory.create(
-            scheduler_name,
-            tokens_per_step=tokens_per_step,
-            decode_tokens_per_step=decode_tokens_per_step,
-            long_prefill_token_threshold=long_prefill_token_threshold,
-            reserve_full_isl=reserve_full_isl,
-            enable_prefix_caching=enable_prefix_caching,
+            sched_cfg.name,
+            tokens_per_step=sched_cfg.tokens_per_step,
+            decode_tokens_per_step=sched_cfg.decode_tokens_per_step,
+            long_prefill_token_threshold=sched_cfg.long_prefill_token_threshold,
+            reserve_full_isl=sched_cfg.reserve_full_isl,
+            enable_prefix_caching=prefix,
         )
         self._workload_generator: InferWorkloadGenerator = (
             workload_generator
             or make_infer_workload_generator(
-                duration_mode=duration_mode,
-                batch_predictor=batch_predictor,
-                dummy_exec_s=dummy_exec_s,
-                prefill_s_per_token=prefill_s_per_token,
-                decode_s_per_token=decode_s_per_token,
-                duration_base_s=duration_base_s,
-                predictor=duration_predictor,
-                frontier_predictor=frontier_predictor,
-                frontier_cluster_type=frontier_cluster_type,
-                frontier_replica_id=frontier_replica_id,
-                frontier_is_moe=frontier_is_moe,
-                op_level_config=op_level_config,
+                duration_mode=iw.resolved_mode(),
+                batch_predictor=batch.predictor,
+                dummy_exec_s=batch.fixed.dummy_exec_s,
+                prefill_s_per_token=batch.token_proportional.prefill_s_per_token,
+                decode_s_per_token=batch.token_proportional.decode_s_per_token,
+                duration_base_s=batch.token_proportional.base_s,
+                frontier_predictor=batch.frontier.predictor,
+                frontier_cluster_type=batch.frontier.cluster_type,
+                frontier_replica_id=int(batch.frontier.replica_id or 0),
+                frontier_is_moe=bool(batch.frontier.is_moe),
+                op_level_config=op_level,
             )
         )
 
@@ -113,39 +102,34 @@ class ReplicaActor(ActorBase):
         #: Set when schedule hits a hard KV contention freeze (async raise may be swallowed).
         self._schedule_error: Optional[BaseException] = None
 
-        if engine is None:
-            raise ValueError("ReplicaActor requires an EngineActor")
         self._worker = WorkerEngine(
             engine,
             on_batch_complete=self._on_worker_complete,
-            max_inflight=max_inflight_batches,
+            config=config,
         )
 
         # Homogeneous replicas: wire KvClient whenever a transfer engine is provided.
         # Store is optional (monolith/PD prefix pool); PD Decode uses control-plane lookup.
         if kv_engine is not None:
-            from hybridsim_infer.workload_generators.configs import NetworkConfig
-
-            model_cfg = None
-            if op_level_config is not None and hasattr(op_level_config, "model"):
-                model_cfg = op_level_config.model
+            model_cfg = op_level.model
             net_cfg = NetworkConfig.from_bandwidth(
-                latency_s=float(kv_latency_s),
-                bandwidth_gbps=float(kv_bandwidth_gbps),
+                latency_s=float(kv_wl.latency_s),
+                bandwidth_gbps=float(kv_wl.bandwidth_gbps),
             )
+            bytes_per_token = kv_wl.bytes_per_token
             client = KvClient(
                 self,
                 kv_store,
                 kv_engine,
                 block_size=self._kv.block_size,
                 store_block_size=getattr(self._kv, "store_block_size", None),
-                bandwidth_gbps=kv_bandwidth_gbps,
+                bandwidth_gbps=kv_wl.bandwidth_gbps,
                 bytes_per_token=(
-                    float(kv_bytes_per_token) if kv_bytes_per_token is not None else 16.0
+                    float(bytes_per_token) if bytes_per_token is not None else 16.0
                 ),
-                transfer_s_floor=kv_transfer_s,
-                kv_latency_s=kv_latency_s,
-                lookup_rtt_s=kv_lookup_rtt_s,
+                transfer_s_floor=kv_wl.transfer_s_floor,
+                kv_latency_s=kv_wl.latency_s,
+                lookup_rtt_s=kv_cfg.lookup.rtt_s,
                 on_transfer_complete=self._on_kv_transfer_complete,
                 model_config=model_cfg,
                 network_config=net_cfg,
@@ -157,7 +141,7 @@ class ReplicaActor(ActorBase):
             )
             self._kv.attach_client(
                 client,
-                kv_lookup_async=bool(kv_lookup_async),
+                kv_lookup_async=bool(kv_cfg.lookup.async_),
             )
 
         super().__init__(sim=sim, hs_actor=hs_actor, message_types=message_types)

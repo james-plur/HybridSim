@@ -10,7 +10,18 @@ from pathlib import Path
 # Ensure reproducible hashes before importing hybridsim hash helpers.
 os.environ.setdefault("PYTHONHASHSEED", "0")
 
-from hybridsim_infer import InferenceConfig, InferenceRequest, build_inference_simulation
+from hybridsim_infer import (
+    BatchFixedConfig,
+    BatchLevelConfig,
+    ClusterConfig,
+    InferWorkloadConfig,
+    InferenceConfig,
+    InferenceRequest,
+    KvConfig,
+    ReplicaScheduleConfig,
+    ScheduleConfig,
+    build_inference_simulation,
+)
 from hybridsim_infer.kv_system import block_keys_from_tokens, reset_none_hash
 
 from mooncake_alignment.compare import compare_pool_profiles
@@ -154,14 +165,18 @@ class TestPdHandoffDes(unittest.TestCase):
     def test_pd_des_completes(self) -> None:
         prompt = list(range(20, 28))
         cfg = InferenceConfig(
-            cluster_type="pd",
-            num_prefill_replicas=1,
-            num_decode_replicas=1,
-            enable_kv_client=True,
-            step_interval=1e-3,
-            dummy_exec_s=0.01,
-            block_size=8,
-            tokens_per_step=8,
+            cluster=ClusterConfig(
+                type="pd",
+                num_prefill_replicas=1,
+                num_decode_replicas=1,
+            ),
+            schedule=ScheduleConfig(
+                replica=ReplicaScheduleConfig(tokens_per_step=8),
+            ),
+            kv=KvConfig(enable_store=True, block_size=8),
+            infer_workload=InferWorkloadConfig(
+                batch=BatchLevelConfig(fixed=BatchFixedConfig(dummy_exec_s=0.01)),
+            ),
         )
         infra = build_inference_simulation(cfg)
         req = InferenceRequest(

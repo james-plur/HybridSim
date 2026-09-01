@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Optional
 
 from hybridsim import Simulation, create_request_profile_session
@@ -10,14 +11,18 @@ from hybridsim import Simulation, create_request_profile_session
 from hybridsim_infer.actors.cluster import ClusterActor
 from hybridsim_infer.actors.kv_store import KvStoreActor
 from hybridsim_infer.actors.replica import ReplicaActor
-from hybridsim_infer.cluster import MonolithClusterManager, PdClusterManager
 from hybridsim_infer.config import InferenceConfig
-from hybridsim_infer.schedulers import SchedulerFactory
-from hybridsim_infer.kv_system import VllmKvCacheManager
-from hybridsim_infer.kv_system.block_keys import resolve_store_block_size
 from hybridsim_infer.messages import INFER_MESSAGE_TYPES
 from hybridsim_infer.request import InferenceRequest
 from hybridsim_infer.request_generators.base import RequestGenerator
+from hybridsim_infer.results import (
+    config_to_dict,
+    request_record,
+    resolve_artifact_path,
+    summarize_metrics,
+    write_json,
+    write_jsonl,
+)
 
 
 @dataclass
@@ -42,12 +47,61 @@ class InferenceSimulation:
         self.schedule_arrivals(requests)
         return requests
 
+    def metrics(self) -> dict[str, Any]:
+        """Aggregate TTFT / TPS / hit-rate from finished requests."""
+        return summarize_metrics(
+            list(self.finished_requests),
+            n_scheduled=int(self.cluster.arrived_count),
+            sim_now=float(self.now),
+        )
+
+    def write_outputs(self) -> dict[str, Path]:
+        """Write enabled artifacts (metrics / requests / config snapshot)."""
+        out = self.config.output
+        written: dict[str, Path] = {}
+
+        metrics_path = resolve_artifact_path(
+            enabled=out.metrics.enabled,
+            path=out.metrics.path,
+            output_dir=out.dir,
+            default_name="metrics.json",
+        )
+        if metrics_path is not None:
+            write_json(metrics_path, self.metrics())
+            written["metrics"] = metrics_path
+
+        requests_path = resolve_artifact_path(
+            enabled=out.requests.enabled,
+            path=out.requests.path,
+            output_dir=out.dir,
+            default_name="requests.jsonl",
+        )
+        if requests_path is not None:
+            write_jsonl(
+                requests_path,
+                [request_record(req) for req in self.finished_requests],
+            )
+            written["requests"] = requests_path
+
+        snapshot_path = resolve_artifact_path(
+            enabled=out.config_snapshot.enabled,
+            path=out.config_snapshot.path,
+            output_dir=out.dir,
+            default_name="config.json",
+        )
+        if snapshot_path is not None:
+            write_json(snapshot_path, config_to_dict(self.config))
+            written["config_snapshot"] = snapshot_path
+
+        return written
+
     def run(self) -> None:
         try:
             self.sim.run()
         finally:
             if self.profile is not None:
                 self.profile.stop()
+            self.write_outputs()
 
     def check_errors(self) -> None:
         self.sim.check_errors()
@@ -67,119 +121,41 @@ class InferenceSimulation:
         return getattr(self.profile, "output_path", None)
 
 
-def _resolve_op_level_config(config: InferenceConfig) -> Any:
-    """Inject ``model_preset`` into OpLevelConfig (shared with all duration modes)."""
-    from hybridsim_infer.workload_generators.model_config_resolve import (
-        resolve_op_level_config,
-    )
-
-    return resolve_op_level_config(
-        op_level_config=getattr(config, "op_level_config", None),
-        model_preset=getattr(config, "model_preset", None),
-    )
-
-
 def build_inference_simulation(
     config: InferenceConfig | None = None,
 ) -> InferenceSimulation:
     """Build Cluster + N homogeneous Replica(+WorkerEngine); optional shared Store."""
     if config is None:
         config = InferenceConfig()
+    config.validate()
 
-    cluster_type = config.resolved_cluster_type()
-    num_replicas = config.resolved_num_replicas()
-    if cluster_type == "pd" and num_replicas < 2:
-        raise ValueError("cluster_type=pd requires at least 1 Prefill + 1 Decode replica")
-
-    if cluster_type == "pd":
-        prefill_ids, decode_ids = config.pd_pools()
-        manager = PdClusterManager(
-            prefill_replica_ids=prefill_ids,
-            decode_replica_ids=decode_ids,
-        )
-    else:
-        manager = MonolithClusterManager()
-
-    op_level_config = _resolve_op_level_config(config)
-
+    profile_out = config.output.request_profile
     profile = create_request_profile_session(
-        enabled=bool(getattr(config, "enable_request_profile", False)),
-        request_profile_path=getattr(config, "request_profile_path", None),
-        request_profile_dir=getattr(config, "request_profile_dir", None),
+        enabled=bool(profile_out.enabled),
+        request_profile_path=profile_out.path,
+        request_profile_dir=profile_out.dir,
     )
+    profile_arg = profile if getattr(profile, "enabled", False) else None
 
     sim = Simulation(config)
     sim.register_messages(list(INFER_MESSAGE_TYPES))
 
-    cluster = sim.spawn_actor(
-        ClusterActor,
-        manager=manager,
-        profile=profile if getattr(profile, "enabled", False) else None,
-    )
+    cluster = sim.spawn_actor(ClusterActor, config=config, profile=profile_arg)
 
     kv_store: Optional[KvStoreActor] = None
-    store_bs = resolve_store_block_size(
-        config.block_size, getattr(config, "store_block_size", None)
-    )
-    if config.enable_kv_client:
-        kv_store = sim.spawn_actor(
-            KvStoreActor,
-            num_blocks=config.kv_store_blocks,
-            block_size=store_bs,
-            gpu_block_size=config.block_size,
-        )
+    if config.kv.enable_store:
+        kv_store = sim.spawn_actor(KvStoreActor, config=config)
 
-    profile_arg = profile if getattr(profile, "enabled", False) else None
     replicas: list[ReplicaActor] = []
-    for rid in range(num_replicas):
-        engine = sim.create_engine_actor()
-        kv = VllmKvCacheManager(
-            num_gpu_blocks=config.num_gpu_blocks,
-            block_size=config.block_size,
-            store_block_size=store_bs,
-            enable_prefix_caching=config.enable_prefix_caching,
-        )
-        kv_engine = (
-            sim.create_engine_actor() if config.enable_kv_client else None
-        )
-        scheduler = SchedulerFactory.create(
-            config.framework,
-            tokens_per_step=config.tokens_per_step,
-            decode_tokens_per_step=config.decode_tokens_per_step,
-            long_prefill_token_threshold=config.long_prefill_token_threshold,
-            reserve_full_isl=config.reserve_full_isl,
-            enable_prefix_caching=config.enable_prefix_caching,
-        )
+    for rid in range(config.cluster.resolved_num_replicas()):
         replica = sim.spawn_actor(
             ReplicaActor,
+            config=config,
             replica_id=rid,
             cluster=cluster,
-            engine=engine,
-            kv_cache_manager=kv,
+            engine=sim.create_engine_actor(),
             kv_store=kv_store,
-            kv_engine=kv_engine,
-            scheduler=scheduler,
-            step_interval=config.step_interval,
-            dummy_exec_s=config.dummy_exec_s,
-            kv_transfer_s=config.kv_transfer_s,
-            kv_bandwidth_gbps=config.kv_bandwidth_gbps,
-            kv_bytes_per_token=config.kv_bytes_per_token,
-            kv_latency_s=getattr(config, "kv_latency_s", 0.0),
-            kv_lookup_async=config.kv_lookup_async,
-            kv_lookup_rtt_s=config.kv_lookup_rtt_s,
-            max_num_scheduled_tokens=config.max_num_scheduled_tokens,
-            max_num_running_reqs=config.max_num_running_reqs,
-            max_inflight_batches=config.max_inflight_batches,
-            duration_mode=config.duration_mode,
-            batch_predictor=getattr(config, "batch_predictor", "fixed"),
-            prefill_s_per_token=config.prefill_s_per_token,
-            decode_s_per_token=config.decode_s_per_token,
-            duration_base_s=config.duration_base_s,
-            frontier_predictor=getattr(config, "frontier_predictor", None),
-            frontier_cluster_type=getattr(config, "frontier_cluster_type", None),
-            frontier_replica_id=int(getattr(config, "frontier_replica_id", 0) or 0),
-            frontier_is_moe=bool(getattr(config, "frontier_is_moe", False)),
-            op_level_config=op_level_config,
+            kv_engine=(sim.create_engine_actor() if config.kv.enable_store else None),
             profile=profile_arg,
         )
         replicas.append(replica)

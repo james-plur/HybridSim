@@ -6,7 +6,12 @@ from typing import Any, Optional
 
 from hybridsim import ActorBase, on
 
-from hybridsim_infer.cluster import ClusterManager, MonolithClusterManager
+from hybridsim_infer.cluster import (
+    ClusterManager,
+    MonolithClusterManager,
+    PdClusterManager,
+)
+from hybridsim_infer.config import InferenceConfig
 from hybridsim_infer.messages import (
     RequestArriveMsg,
     RequestFinishMsg,
@@ -16,6 +21,16 @@ from hybridsim_infer.messages import (
 from hybridsim_infer.request import InferenceRequest
 
 
+def _manager_from_config(config: InferenceConfig) -> ClusterManager:
+    if config.cluster.resolved_cluster_type() == "pd":
+        prefill_ids, decode_ids = config.cluster.pd_pools()
+        return PdClusterManager(
+            prefill_replica_ids=prefill_ids,
+            decode_replica_ids=decode_ids,
+        )
+    return MonolithClusterManager()
+
+
 class ClusterActor(ActorBase):
     def __init__(
         self,
@@ -23,11 +38,12 @@ class ClusterActor(ActorBase):
         sim,
         hs_actor,
         message_types: dict[str, Any],
+        config: InferenceConfig,
         replicas: Optional[list[Any]] = None,
-        manager: Optional[ClusterManager] = None,
         profile: Any = None,
     ) -> None:
-        self._mgr: ClusterManager = manager or MonolithClusterManager()
+        self._config = config
+        self._mgr: ClusterManager = _manager_from_config(config)
         self.finished_requests: list[InferenceRequest] = []
         self.arrived_count = 0
         self._profile = profile

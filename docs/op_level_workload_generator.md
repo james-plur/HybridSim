@@ -1,5 +1,7 @@
 # Op-level workload generator
 
+> **本层位置**：replica 内部的第三步（`schedule` → `kv` → `workload generator`），把已调度的 `ScheduleBatch` 变成 Engine 能跑的算子 DAG 与时长。全景见 [`architecture.md`](architecture.md)，DAG 如何被执行见 [`engine.md`](engine.md)。
+
 一次推理迭代对应一个计算图 op DAG。构图贴近 torch：用 mock `Module.forward` 展开图，叶子是**形状驱动的原语**，再交给 analyzer 估时。
 
 ## 分层

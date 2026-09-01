@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Optional
 
+from hybridsim_infer.config import InferenceConfig
 from hybridsim_infer.schedule_types import ScheduleBatch
 
 
@@ -23,11 +24,12 @@ class WorkerEngine:
         engine,
         *,
         on_batch_complete: Callable[[int, Optional[ScheduleBatch]], None],
-        max_inflight: int = 1,
+        config: InferenceConfig,
     ) -> None:
         self._engine = engine
         self._on_batch_complete = on_batch_complete
-        self._max_inflight = max(1, int(max_inflight))
+        self._config = config
+        self._max_inflight = max(1, int(config.schedule.engine.max_inflight_batches))
         #: workload_id → batch; held until ``acknowledge``.
         self._inflight: dict[int, ScheduleBatch] = {}
         self._engine.set_on_workload_complete(self._handle_complete)

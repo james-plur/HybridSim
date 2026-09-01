@@ -1,5 +1,7 @@
 # hybridsim Scheduler 调度实现
 
+> **本层位置**：集群分发（cluster）与 replica 内部第一步（schedule）。KV 细节见 [`kv.md`](kv.md)，batch 之后的计时与执行见 [`engine.md`](engine.md)，全景见 [`architecture.md`](architecture.md)。
+
 本文说明 hybridsim 如何把一条请求变成一步可执行的 `ScheduleBatch`，并对照 vLLM V1 `Scheduler`。  
 KV cache 的块哈希、Store / Mooncake 传输时序另文；这里只把 KV **当成调度门控**（`allocate` / `can_fit` 成功或失败），不展开其内部实现。
 
@@ -16,7 +18,8 @@ KV cache 的块哈希、Store / Mooncake 传输时序另文；这里只把 KV **
 | 对齐测试 | `tests/schedule_alignment/`、`tests/test_schedule_alignment.py` |
 
 请求如何生成、字段含义见 [`request_generation.md`](request_generation.md)。  
-代码级逐项对照还可看 [`tests/schedule_alignment/schedule_alignment.md`](../tests/schedule_alignment/schedule_alignment.md)。
+代码级逐项对照还可看 [`tests/schedule_alignment/schedule_alignment.md`](../tests/schedule_alignment/schedule_alignment.md)。  
+集群分发（流程 A）的拓扑与角色约定另见 [`architecture.md`](architecture.md) 的「集群分发」一节。
 
 ---
 
@@ -75,7 +78,7 @@ WorkerEngine → BatchEndMsg
 
 两种拓扑：
 
-| `cluster_type` | 选谁 | 盖章 |
+| `cluster.type` | 选谁 | 盖章 |
 |----------------|------|------|
 | `monolith` | 全部 replica 里 least-load | 清掉 PD 标志 |
 | `pd` | Prefill 池 least-load | `do_remote_decode=True`；handoff 时再选 Decode 池 |
