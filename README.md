@@ -124,6 +124,25 @@ infra.check_errors()
 | **输出**  | `metrics()`、`finished_requests`、可选 `output.`* 文件 → [outputs.md](docs/outputs.md)                              |
 
 
+### 典型 Demo：PD 2P+2D
+
+[`examples/inference/pd_multipool_profile_demo.py`](examples/inference/pd_multipool_profile_demo.py) 跑一条完整 serving 链路：2 Prefill + 2 Decode、KV 传输、prefix cache、metrics 与 request profile。
+
+```bash
+PYTHONPATH=src/python:. python examples/inference/pd_multipool_profile_demo.py
+PYTHONPATH=src/python:. python examples/inference/pd_multipool_profile_demo.py --input trace
+PYTHONPATH=src/python:. python examples/inference/pd_multipool_profile_demo.py --workload op
+```
+
+| | 说明 |
+| --- | --- |
+| **用法** | 上列命令；`--input handwritten\|trace`，`--workload batch\|op`。其它开关见 `--help`。 |
+| **输入** | 配置：`cluster.type=pd`（2P+2D）、Store + prefix cache、`llama-3.1-8b`。请求：手写 6 条共享前缀，或 Mooncake KV trace 前 10 条。估时：`batch` 为 token 比例；`op` 为 mock DAG + Roofline（默认 TP=2）。 |
+| **输出** | stdout 打印 `metrics()`（TTFT / TPS / hit_rate 等）。Chrome Trace 默认 `profile/pd_multipool_profile_demo.json`（其它组合带 `_input_workload` 后缀），用 `chrome://tracing` 或 [Perfetto](https://ui.perfetto.dev/) 打开。 |
+
+细节与其它示例见 [examples/inference/README.md](examples/inference/README.md)。
+
+
 ---
 
 

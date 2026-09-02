@@ -21,12 +21,12 @@
 |------|------|
 | `mean_ttft_s` | 已完成请求的平均 TTFT（秒）；无完成请求时为 `null` |
 | `tps` | prefill token 数 / 完成请求时间跨度 |
-| `hit_rate` | `prefix_hit_tokens / prefill_tokens` |
+| `hit_rate` | Prefill 阶段 APC ∪ Store 命中 token / `prefill_tokens`；**不含** PD Decode 拉 KV |
 | `n_finished` | 已完成请求数 |
 | `n_scheduled` | 已到达并分发的请求数 |
 | `sim_now_s` | 仿真终态时间 |
 | `prefill_tokens` | 已完成请求的 prefill token 总和 |
-| `prefix_hit_tokens` | 前缀命中 token 总和 |
+| `prefix_hit_tokens` | 各请求最长 APC/Store 前缀命中之和（同样不含 PD 传输） |
 
 ```python
 from hybridsim_infer import InferenceConfig, build_inference_simulation
@@ -71,7 +71,7 @@ infra.check_errors()  # 聚合 Python / C++ Actor 异常
 | `arrived_at` / `finished_at` | 到达 / 完成仿真时间（秒） |
 | `num_prefill_tokens` / `num_decode_tokens` | 请求形状 |
 | `num_computed_tokens` / `num_output_tokens` | 推进进度 |
-| `prefix_hit_tokens` | 前缀命中 token 数 |
+| `prefix_hit_tokens` | Prefill APC/Store 命中 token 数（不含 PD Decode 拉 KV） |
 | `completed` / `status` | 是否完成、状态枚举名 |
 
 ### 配置示例

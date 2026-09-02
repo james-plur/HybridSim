@@ -7,7 +7,9 @@ from hybridsim_infer.workload_generators.infer_workload_generator.op_level.analy
 )
 from hybridsim_infer.workload_generators.infer_workload_generator.op_level.analytic.dag_profile import (
     asap_schedule,
+    assign_kernel_streams,
     build_chrome_trace,
+    build_replica_kernel_slices,
     profile_schedule_batch,
     write_chrome_trace,
 )
@@ -23,7 +25,9 @@ __all__ = [
     "OperatorDAG",
     "OperatorKind",
     "asap_schedule",
+    "assign_kernel_streams",
     "build_chrome_trace",
+    "build_replica_kernel_slices",
     "critical_path_duration_s",
     "profile_schedule_batch",
     "total_kernel_duration_s",

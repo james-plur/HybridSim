@@ -902,6 +902,72 @@ class TestKvClientPath(unittest.TestCase):
         self.assertTrue(params.get("do_remote_prefill"))
         self.assertTrue(params.get("_handed_off"))
         self.assertEqual(params.get("remote_replica_id"), 0)
+        # PD KV pull is not a prefix-cache hit.
+        self.assertEqual(done.prefix_hit_tokens, 0)
+        self.assertEqual(infra.metrics()["hit_rate"], 0.0)
+
+    def test_pd_prefix_hit_excludes_decode_kv_pull(self) -> None:
+        prompt = list(range(16))
+        cfg = InferenceConfig(
+            cluster=ClusterConfig(
+                type="pd",
+                num_prefill_replicas=1,
+                num_decode_replicas=1,
+            ),
+            schedule=ScheduleConfig(
+                replica=ReplicaScheduleConfig(
+                    tokens_per_step=8,
+                    decode_tokens_per_step=1,
+                    max_num_scheduled_tokens=64,
+                ),
+            ),
+            kv=KvConfig(
+                enable_store=True,
+                enable_prefix_caching=True,
+                block_size=8,
+                num_gpu_blocks=256,
+                lookup=KvLookupConfig(rtt_s=1e-3),
+            ),
+            infer_workload=InferWorkloadConfig(
+                batch=BatchLevelConfig(fixed=BatchFixedConfig(dummy_exec_s=0.01)),
+            ),
+            kv_workload=KvWorkloadConfig(
+                bandwidth_gbps=100.0,
+                transfer_s_floor=1e-4,
+            ),
+        )
+        infra = build_inference_simulation(cfg)
+        infra.schedule_arrivals(
+            [
+                InferenceRequest(
+                    request_id=1,
+                    arrived_at=0.0,
+                    num_prefill_tokens=len(prompt),
+                    num_decode_tokens=2,
+                    prompt_token_ids=list(prompt),
+                ),
+                InferenceRequest(
+                    request_id=2,
+                    arrived_at=0.2,
+                    num_prefill_tokens=len(prompt),
+                    num_decode_tokens=2,
+                    prompt_token_ids=list(prompt),
+                ),
+            ]
+        )
+        infra.run()
+        infra.check_errors()
+        by_id = {r.request_id: r for r in infra.finished_requests}
+        self.assertEqual(len(by_id), 2)
+        self.assertEqual(by_id[1].prefix_hit_tokens, 0)
+        self.assertGreater(by_id[2].prefix_hit_tokens, 0)
+        metrics = infra.metrics()
+        self.assertLess(float(metrics["hit_rate"]), 1.0)
+        self.assertGreater(float(metrics["hit_rate"]), 0.0)
+        self.assertEqual(
+            int(metrics["prefix_hit_tokens"]),
+            by_id[1].prefix_hit_tokens + by_id[2].prefix_hit_tokens,
+        )
 
     def test_pd_decode_skips_store_hash_match(self) -> None:
         """Decode control-plane lookup ignores Store hash hits (still RTT + pull)."""

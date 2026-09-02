@@ -89,6 +89,144 @@ class ScheduledKernel:
         return self.start_s + self.duration_s
 
 
+def kernel_stream_kind(name: str, kind: Optional[str] = None) -> str:
+    """Map a kernel onto the compute vs comm stream pool."""
+    if _tid_for_kernel(name, kind) == TID_COMM:
+        return "comm"
+    return "compute"
+
+
+def assign_kernel_streams(scheduled: list[ScheduledKernel]) -> list[int]:
+    """Greedy stream ids: sequential same-kind deps stay; independent work forks.
+
+    Compute (gemm/fused/mem) and comm use separate pools. A kernel stays on a
+    stream when a predecessor is that stream's last op. Otherwise an idle
+    same-kind stream is reused; else a new stream is allocated.
+    """
+    n = len(scheduled)
+    stream_of = [-1] * n
+    pools: dict[str, list[dict[str, Any]]] = {"compute": [], "comm": []}
+    next_id = 0
+    for sk in scheduled:
+        kind = kernel_stream_kind(sk.name, sk.kind)
+        pool = pools[kind]
+        chosen: dict[str, Any] | None = None
+        for pred in sk.dependencies:
+            sid = stream_of[pred] if 0 <= pred < n else -1
+            if sid < 0:
+                continue
+            for rec in pool:
+                if int(rec["id"]) == sid and int(rec["last_index"]) == pred:
+                    chosen = rec
+                    break
+            if chosen is not None:
+                break
+        if chosen is None:
+            idle = [
+                rec
+                for rec in pool
+                if float(rec["end_s"]) <= float(sk.start_s) + 1e-18
+            ]
+            if idle:
+                chosen = max(idle, key=lambda rec: (float(rec["end_s"]), -int(rec["id"])))
+        if chosen is None:
+            chosen = {
+                "id": next_id,
+                "last_index": int(sk.index),
+                "end_s": float(sk.end_s),
+            }
+            next_id += 1
+            pool.append(chosen)
+        else:
+            chosen["last_index"] = int(sk.index)
+            chosen["end_s"] = float(sk.end_s)
+        stream_of[int(sk.index)] = int(chosen["id"])
+    return stream_of
+
+
+def stream_track_names(
+    scheduled: list[ScheduledKernel], stream_ids: list[int]
+) -> dict[int, str]:
+    """Stable ``compute_0`` / ``comm_0`` names in first-seen stream order."""
+    counters = {"compute": 0, "comm": 0}
+    names: dict[int, str] = {}
+    for sk in scheduled:
+        sid = int(stream_ids[sk.index])
+        if sid in names:
+            continue
+        kind = kernel_stream_kind(sk.name, sk.kind)
+        names[sid] = f"{kind}_{counters[kind]}"
+        counters[kind] += 1
+    return names
+
+
+def build_replica_kernel_slices(
+    kernels: list[dict[str, Any]],
+    *,
+    engine_start_s: float,
+    stream_tid_base: int = 2,
+    workload_id: int | None = None,
+    batch_id: int | None = None,
+    request_ids: Optional[list[int]] = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """ASAP slices + cross-stream dependency flows for request profile."""
+    scheduled = asap_schedule(kernels)
+    stream_ids = assign_kernel_streams(scheduled)
+    names = stream_track_names(scheduled, stream_ids)
+    by_index = {sk.index: sk for sk in scheduled}
+    slices: list[dict[str, Any]] = []
+    for sk in scheduled:
+        sid = int(stream_ids[sk.index])
+        args: dict[str, Any] = {
+            "kernel_index": sk.index,
+            "kind": sk.kind,
+            "dependencies": list(sk.dependencies),
+            "stream": names[sid],
+        }
+        if workload_id is not None:
+            args["workload_id"] = int(workload_id)
+        if batch_id is not None:
+            args["batch_id"] = int(batch_id)
+        if request_ids:
+            args["request_ids"] = [int(x) for x in request_ids]
+        for key in ("flops", "bytes", "payload_bytes"):
+            if key in sk.features and sk.features[key] is not None:
+                args[key] = sk.features[key]
+        slices.append(
+            {
+                "name": sk.name,
+                "start_s": float(engine_start_s) + float(sk.start_s),
+                "duration_s": float(sk.duration_s),
+                "tid": int(stream_tid_base) + sid,
+                "thread_name": names[sid],
+                "args": args,
+            }
+        )
+    flows: list[dict[str, Any]] = []
+    for sk in scheduled:
+        sid = int(stream_ids[sk.index])
+        for dep in sk.dependencies:
+            if int(stream_ids[dep]) == sid:
+                continue
+            pred = by_index[dep]
+            flows.append(
+                {
+                    "name": "KernelDep",
+                    "start_s": float(engine_start_s) + float(pred.end_s),
+                    "end_s": float(engine_start_s) + float(sk.start_s),
+                    "src_tid": int(stream_tid_base) + int(stream_ids[dep]),
+                    "dst_tid": int(stream_tid_base) + sid,
+                    "args": {
+                        "src": pred.name,
+                        "dst": sk.name,
+                        "src_index": pred.index,
+                        "dst_index": sk.index,
+                    },
+                }
+            )
+    return slices, flows
+
+
 def asap_schedule(kernels: list[dict[str, Any]]) -> list[ScheduledKernel]:
     """Earliest-start schedule respecting TimeoutKernel dependencies."""
     n = len(kernels)
@@ -331,11 +469,15 @@ def make_demo_prefill_batch(
 __all__ = [
     "ScheduledKernel",
     "asap_schedule",
+    "assign_kernel_streams",
     "build_chrome_trace",
+    "build_replica_kernel_slices",
     "extract_batch_features",
+    "kernel_stream_kind",
     "make_demo_prefill_batch",
     "profile_schedule_batch",
     "rank_layout",
+    "stream_track_names",
     "summarize_overlap",
     "write_chrome_trace",
 ]

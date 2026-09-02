@@ -12,6 +12,7 @@ from hybridsim.request_profile.events import (
     MSG_COMPLETE,
     MSG_FLOW,
     MSG_INSTANT,
+    MSG_PROFILE_META,
     MSG_REQUEST_META,
     MSG_STOP,
     PID_CLUSTER,
@@ -86,7 +87,34 @@ class RequestProfileLike(Protocol):
         request_id: int,
         direction: str,
         num_tokens: int = 0,
+        block_ids: Optional[list[int]] = None,
     ) -> None: ...
+    def emit_engine_kernels(
+        self,
+        *,
+        replica_id: int,
+        slices: list[dict[str, Any]],
+        flows: Optional[list[dict[str, Any]]] = None,
+    ) -> None: ...
+    def emit_handoff(
+        self,
+        *,
+        time_s: float,
+        request_id: int,
+        from_replica_id: int,
+        to_replica_id: int,
+        request: Any = None,
+    ) -> None: ...
+    def emit_request_finish(
+        self,
+        *,
+        time_s: float,
+        request_id: int,
+        replica_id: int,
+        request: Any = None,
+    ) -> None: ...
+    def emit_profile_meta(self, meta: dict[str, Any]) -> None: ...
+    def set_replica_process_name(self, replica_id: int, name: str) -> None: ...
 
 
 RequestProfileSessionT = Union["RequestProfileSession", NullRequestProfileSession]
@@ -127,6 +155,7 @@ class RequestProfileSession:
         self._pending_schedule_flows: dict[tuple[int, int], Deque[int]] = defaultdict(
             deque
         )
+        self._replica_process_names: dict[int, str] = {}
 
     def start(self) -> None:
         if self._started:
@@ -155,9 +184,20 @@ class RequestProfileSession:
         self._next_flow_id += 1
         return fid
 
+    def set_replica_process_name(self, replica_id: int, name: str) -> None:
+        self._replica_process_names[int(replica_id)] = str(name)
+
+    def emit_profile_meta(self, meta: dict[str, Any]) -> None:
+        self._put({"kind": MSG_PROFILE_META, "meta": dict(meta)})
+
     def _put(self, msg: dict[str, Any]) -> None:
         if self._queue is None or self._stopped:
             return
+        rid = msg.get("replica_id")
+        if rid is not None and not msg.get("process_name"):
+            name = self._replica_process_names.get(int(rid))
+            if name:
+                msg["process_name"] = name
         try:
             self._queue.put_nowait(msg)
         except Exception:
@@ -175,21 +215,26 @@ class RequestProfileSession:
         args: Optional[dict[str, Any]] = None,
         replica_id: Optional[int] = None,
         track: Optional[str] = None,
+        thread_name: Optional[str] = None,
+        process_name: Optional[str] = None,
     ) -> None:
-        self._put(
-            {
-                "kind": MSG_COMPLETE,
-                "name": name,
-                "start_s": float(start_s),
-                "duration_s": float(duration_s),
-                "pid": int(pid),
-                "tid": int(tid),
-                "category": category,
-                "args": dict(args or {}),
-                "replica_id": replica_id,
-                "track": track,
-            }
-        )
+        msg: dict[str, Any] = {
+            "kind": MSG_COMPLETE,
+            "name": name,
+            "start_s": float(start_s),
+            "duration_s": float(duration_s),
+            "pid": int(pid),
+            "tid": int(tid),
+            "category": category,
+            "args": dict(args or {}),
+            "replica_id": replica_id,
+            "track": track,
+        }
+        if thread_name:
+            msg["thread_name"] = str(thread_name)
+        if process_name:
+            msg["process_name"] = str(process_name)
+        self._put(msg)
 
     def emit_instant(
         self,
@@ -202,20 +247,25 @@ class RequestProfileSession:
         args: Optional[dict[str, Any]] = None,
         replica_id: Optional[int] = None,
         track: Optional[str] = None,
+        thread_name: Optional[str] = None,
+        process_name: Optional[str] = None,
     ) -> None:
-        self._put(
-            {
-                "kind": MSG_INSTANT,
-                "name": name,
-                "time_s": float(time_s),
-                "pid": int(pid),
-                "tid": int(tid),
-                "category": category,
-                "args": dict(args or {}),
-                "replica_id": replica_id,
-                "track": track,
-            }
-        )
+        msg: dict[str, Any] = {
+            "kind": MSG_INSTANT,
+            "name": name,
+            "time_s": float(time_s),
+            "pid": int(pid),
+            "tid": int(tid),
+            "category": category,
+            "args": dict(args or {}),
+            "replica_id": replica_id,
+            "track": track,
+        }
+        if thread_name:
+            msg["thread_name"] = str(thread_name)
+        if process_name:
+            msg["process_name"] = str(process_name)
+        self._put(msg)
 
     def emit_flow(
         self,
@@ -230,22 +280,27 @@ class RequestProfileSession:
         args: Optional[dict[str, Any]] = None,
         replica_id: Optional[int] = None,
         track: Optional[str] = None,
+        thread_name: Optional[str] = None,
+        process_name: Optional[str] = None,
     ) -> None:
-        self._put(
-            {
-                "kind": MSG_FLOW,
-                "name": name,
-                "phase": phase,
-                "time_s": float(time_s),
-                "pid": int(pid),
-                "tid": int(tid),
-                "flow_id": int(flow_id),
-                "category": category,
-                "args": dict(args or {}),
-                "replica_id": replica_id,
-                "track": track,
-            }
-        )
+        msg: dict[str, Any] = {
+            "kind": MSG_FLOW,
+            "name": name,
+            "phase": phase,
+            "time_s": float(time_s),
+            "pid": int(pid),
+            "tid": int(tid),
+            "flow_id": int(flow_id),
+            "category": category,
+            "args": dict(args or {}),
+            "replica_id": replica_id,
+            "track": track,
+        }
+        if thread_name:
+            msg["thread_name"] = str(thread_name)
+        if process_name:
+            msg["process_name"] = str(process_name)
+        self._put(msg)
 
     def emit_cluster_schedule(self, *, time_s: float) -> None:
         self.emit_complete(
@@ -419,6 +474,12 @@ class RequestProfileSession:
         workload_id: int,
         batch_id: int,
         request: Any = None,
+        phase: Optional[str] = None,
+        scheduled_tokens: Optional[int] = None,
+        prefix_hit_tokens: Optional[int] = None,
+        n_kernels: Optional[int] = None,
+        critical_path_s: Optional[float] = None,
+        request_ids: Optional[list[int]] = None,
     ) -> None:
         rid = int(request_id)
         pid = replica_pid(replica_id)
@@ -427,6 +488,18 @@ class RequestProfileSession:
             "workload_id": int(workload_id),
             "batch_id": int(batch_id),
         }
+        if phase is not None:
+            args["phase"] = str(phase)
+        if scheduled_tokens is not None:
+            args["scheduled_tokens"] = int(scheduled_tokens)
+        if prefix_hit_tokens is not None:
+            args["prefix_hit_tokens"] = int(prefix_hit_tokens)
+        if n_kernels is not None:
+            args["n_kernels"] = int(n_kernels)
+        if critical_path_s is not None:
+            args["critical_path_s"] = float(critical_path_s)
+        if request_ids:
+            args["request_ids"] = [int(x) for x in request_ids]
         if request is not None:
             snap = snapshot_request_meta(request)
             args.update(
@@ -434,6 +507,9 @@ class RequestProfileSession:
                     "num_prefill_tokens": snap["num_prefill_tokens"],
                     "num_decode_tokens": snap["num_decode_tokens"],
                     "num_computed_tokens": snap["num_computed_tokens"],
+                    "prefix_hit_tokens": snap.get(
+                        "prefix_hit_tokens", args.get("prefix_hit_tokens", 0)
+                    ),
                 }
             )
         self.emit_complete(
@@ -473,20 +549,125 @@ class RequestProfileSession:
         request_id: int,
         direction: str,
         num_tokens: int = 0,
+        block_ids: Optional[list[int]] = None,
     ) -> None:
         name = "KvPull" if str(direction) == "pull" else "KvPush"
+        args: dict[str, Any] = {
+            "request_id": int(request_id),
+            "direction": str(direction),
+            "num_tokens": int(num_tokens),
+        }
+        if block_ids:
+            args["block_ids"] = [int(x) for x in block_ids]
         self.emit_complete(
             name=name,
             start_s=start_s,
             duration_s=duration_s,
             pid=replica_pid(replica_id),
             tid=TID_REPLICA_ENGINE,
-            args={
-                "request_id": int(request_id),
-                "direction": str(direction),
-                "num_tokens": int(num_tokens),
-            },
+            args=args,
             replica_id=int(replica_id),
+        )
+
+    def emit_engine_kernels(
+        self,
+        *,
+        replica_id: int,
+        slices: list[dict[str, Any]],
+        flows: Optional[list[dict[str, Any]]] = None,
+    ) -> None:
+        pid = replica_pid(replica_id)
+        for sl in slices:
+            self.emit_complete(
+                name=str(sl["name"]),
+                start_s=float(sl["start_s"]),
+                duration_s=float(sl.get("duration_s", 0.0)),
+                pid=pid,
+                tid=int(sl["tid"]),
+                category=str(sl.get("category", "op_kernel")),
+                args=dict(sl.get("args") or {}),
+                replica_id=int(replica_id),
+                thread_name=sl.get("thread_name"),
+            )
+        for fl in flows or []:
+            flow_id = self._alloc_flow_id()
+            args = dict(fl.get("args") or {})
+            self.emit_flow(
+                name=str(fl.get("name", "KernelDep")),
+                phase="s",
+                time_s=float(fl["start_s"]),
+                pid=pid,
+                tid=int(fl["src_tid"]),
+                flow_id=flow_id,
+                args=args,
+                replica_id=int(replica_id),
+            )
+            self.emit_flow(
+                name=str(fl.get("name", "KernelDep")),
+                phase="f",
+                time_s=float(fl["end_s"]),
+                pid=pid,
+                tid=int(fl["dst_tid"]),
+                flow_id=flow_id,
+                args=args,
+                replica_id=int(replica_id),
+            )
+
+    def emit_handoff(
+        self,
+        *,
+        time_s: float,
+        request_id: int,
+        from_replica_id: int,
+        to_replica_id: int,
+        request: Any = None,
+    ) -> None:
+        args: dict[str, Any] = {
+            "request_id": int(request_id),
+            "from_replica_id": int(from_replica_id),
+            "to_replica_id": int(to_replica_id),
+        }
+        if request is not None:
+            snap = snapshot_request_meta(request)
+            args["prefix_hit_tokens"] = snap.get("prefix_hit_tokens", 0)
+        self.emit_instant(
+            name="Handoff",
+            time_s=time_s,
+            pid=PID_CLUSTER,
+            tid=TID_CLUSTER_DISPATCH,
+            args=args,
+            track="cluster",
+        )
+
+    def emit_request_finish(
+        self,
+        *,
+        time_s: float,
+        request_id: int,
+        replica_id: int,
+        request: Any = None,
+    ) -> None:
+        args: dict[str, Any] = {
+            "request_id": int(request_id),
+            "replica_id": int(replica_id),
+        }
+        if request is not None:
+            snap = snapshot_request_meta(request)
+            args.update(
+                {
+                    "prefix_hit_tokens": snap.get("prefix_hit_tokens", 0),
+                    "num_prefill_tokens": snap.get("num_prefill_tokens"),
+                    "num_decode_tokens": snap.get("num_decode_tokens"),
+                    "finished_at": snap.get("finished_at", time_s),
+                }
+            )
+        self.emit_instant(
+            name="RequestFinish",
+            time_s=time_s,
+            pid=PID_CLUSTER,
+            tid=TID_CLUSTER_SCHEDULE,
+            args=args,
+            track="cluster",
         )
 
     def stop(self, timeout: float = 5.0) -> Optional[Path]:

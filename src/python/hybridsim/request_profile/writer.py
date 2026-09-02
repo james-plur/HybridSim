@@ -10,6 +10,7 @@ from hybridsim.request_profile.events import (
     MSG_COMPLETE,
     MSG_FLOW,
     MSG_INSTANT,
+    MSG_PROFILE_META,
     MSG_REQUEST_META,
     MSG_STOP,
     PID_CLUSTER,
@@ -26,31 +27,45 @@ from hybridsim.request_profile.events import (
 )
 
 
+def _ensure_thread(
+    events: list[dict[str, Any]],
+    seen: set[str],
+    pid: int,
+    tid: int,
+    name: str,
+) -> None:
+    key = f"thread:{int(pid)}:{int(tid)}"
+    if key in seen:
+        return
+    seen.add(key)
+    events.append(thread_name_event(int(pid), int(tid), str(name)))
+
+
 def _ensure_cluster_meta(events: list[dict[str, Any]], seen: set[str]) -> None:
     key = "cluster"
     if key in seen:
         return
     seen.add(key)
     events.append(process_name_event(PID_CLUSTER, "Cluster"))
-    events.append(
-        thread_name_event(PID_CLUSTER, TID_CLUSTER_SCHEDULE, "schedule")
-    )
-    events.append(
-        thread_name_event(PID_CLUSTER, TID_CLUSTER_DISPATCH, "dispatch")
-    )
+    _ensure_thread(events, seen, PID_CLUSTER, TID_CLUSTER_SCHEDULE, "schedule")
+    _ensure_thread(events, seen, PID_CLUSTER, TID_CLUSTER_DISPATCH, "dispatch")
 
 
 def _ensure_replica_meta(
-    events: list[dict[str, Any]], seen: set[str], replica_id: int
+    events: list[dict[str, Any]],
+    seen: set[str],
+    replica_id: int,
+    *,
+    process_name: str | None = None,
 ) -> None:
     key = f"replica_{int(replica_id)}"
-    if key in seen:
-        return
-    seen.add(key)
     pid = replica_pid(replica_id)
-    events.append(process_name_event(pid, f"Replica_{int(replica_id)}"))
-    events.append(thread_name_event(pid, TID_REPLICA_ENGINE, "engine"))
-    events.append(thread_name_event(pid, TID_REPLICA_SCHEDULE, "schedule"))
+    if key not in seen:
+        seen.add(key)
+        label = process_name or f"Replica_{int(replica_id)}"
+        events.append(process_name_event(pid, str(label)))
+        _ensure_thread(events, seen, pid, TID_REPLICA_ENGINE, "engine")
+        _ensure_thread(events, seen, pid, TID_REPLICA_SCHEDULE, "schedule")
 
 
 def _ensure_meta_for_msg(
@@ -60,9 +75,23 @@ def _ensure_meta_for_msg(
     if replica_id is None and msg.get("track") == "cluster":
         _ensure_cluster_meta(events, seen)
     elif replica_id is not None:
-        _ensure_replica_meta(events, seen, int(replica_id))
+        _ensure_replica_meta(
+            events,
+            seen,
+            int(replica_id),
+            process_name=msg.get("process_name"),
+        )
     else:
         _ensure_cluster_meta(events, seen)
+    thread_name = msg.get("thread_name")
+    if thread_name is not None and replica_id is not None:
+        _ensure_thread(
+            events,
+            seen,
+            replica_pid(int(replica_id)),
+            int(msg.get("tid", TID_REPLICA_ENGINE)),
+            str(thread_name),
+        )
 
 
 def writer_main(queue: Any, output_path: str) -> None:
@@ -70,6 +99,7 @@ def writer_main(queue: Any, output_path: str) -> None:
     events: list[dict[str, Any]] = []
     seen_meta: set[str] = set()
     requests: dict[str, Any] = {}
+    extra_meta: dict[str, Any] = {}
     dropped = 0
 
     while True:
@@ -82,6 +112,11 @@ def writer_main(queue: Any, output_path: str) -> None:
         kind = msg.get("kind")
         if kind == MSG_STOP:
             break
+        if kind == MSG_PROFILE_META:
+            payload = dict(msg.get("meta") or {})
+            payload.pop("requests", None)
+            extra_meta.update(payload)
+            continue
         if kind == MSG_REQUEST_META:
             meta = dict(msg.get("meta") or {})
             rid = meta.get("request_id")
@@ -136,13 +171,15 @@ def writer_main(queue: Any, output_path: str) -> None:
 
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    metadata: dict[str, Any] = {
+        "source": "hybridsim_request_profile",
+        "dropped_messages": dropped,
+        "requests": requests,
+    }
+    metadata.update(extra_meta)
     profile = {
         "traceEvents": events,
         "displayTimeUnit": "ms",
-        "metadata": {
-            "source": "hybridsim_request_profile",
-            "dropped_messages": dropped,
-            "requests": requests,
-        },
+        "metadata": metadata,
     }
     path.write_text(json.dumps(profile, indent=2), encoding="utf-8")

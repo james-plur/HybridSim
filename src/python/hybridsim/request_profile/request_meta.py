@@ -36,6 +36,12 @@ def snapshot_request_meta(
         "prompt_prefix": [int(x) for x in prompt[: max(0, int(prompt_prefix_len))]],
         "completed": bool(getattr(req, "completed", False)),
         "status": getattr(status, "name", str(status)) if status is not None else None,
+        "prefix_hit_tokens": int(getattr(req, "prefix_hit_tokens", 0) or 0),
+        "finished_at": (
+            None
+            if getattr(req, "finished_at", None) is None
+            else float(req.finished_at)
+        ),
         "kv_transfer_params": _json_safe(dict(kv)),
     }
     if extra:

@@ -248,9 +248,15 @@ class VllmScheduler(InferenceScheduler):
                     still_waiting.append(request)
                     continue
                 hit_n = int(lookup.get("num_tokens", 0)) if lookup.get("hit") else 0
-                request.record_prefix_hit(
-                    max(int(request.num_computed_tokens), hit_n)
+                # Prefill APC ∪ Store only. PD Decode control-plane pull is
+                # KV transfer, not a prefix-cache hit.
+                pd_kv_transfer = str(lookup.get("mode") or "") == "control_plane" or bool(
+                    (request.kv_transfer_params or {}).get("do_remote_prefill")
                 )
+                if not pd_kv_transfer:
+                    request.record_prefix_hit(
+                        max(int(request.num_computed_tokens), hit_n)
+                    )
                 if hit_n > request.num_computed_tokens:
                     gain = hit_n - request.num_computed_tokens
                     blocks = kv_cache_manager.allocate(request, gain)

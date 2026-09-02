@@ -99,6 +99,15 @@ class ClusterActor(ActorBase):
                 kind="handoff",
                 request=req,
             )
+            emit_handoff = getattr(self._profile, "emit_handoff", None)
+            if emit_handoff is not None:
+                emit_handoff(
+                    time_s=now,
+                    request_id=int(req.request_id),
+                    from_replica_id=int(msg.from_replica_id),
+                    to_replica_id=int(decode_rid),
+                    request=req,
+                )
         self._mgr.replica(decode_rid).send(RequestMsg, request=req)
 
     @on(RequestFinishMsg)
@@ -107,12 +116,18 @@ class ClusterActor(ActorBase):
         req.finished_at = float(self.sim.now())
         self.finished_requests.append(req)
         if self._profile is not None:
-            self._profile.emit_request_meta(
-                request=req,
-                extra={
-                    "finished_at": float(req.finished_at),
-                    "finish_replica_id": int(msg.replica_id),
-                    "prefix_hit_tokens": int(req.prefix_hit_tokens),
-                },
-            )
+            extra = {
+                "finished_at": float(req.finished_at),
+                "finish_replica_id": int(msg.replica_id),
+                "prefix_hit_tokens": int(req.prefix_hit_tokens),
+            }
+            self._profile.emit_request_meta(request=req, extra=extra)
+            emit_finish = getattr(self._profile, "emit_request_finish", None)
+            if emit_finish is not None:
+                emit_finish(
+                    time_s=float(req.finished_at),
+                    request_id=int(req.request_id),
+                    replica_id=int(msg.replica_id),
+                    request=req,
+                )
         self._mgr.on_finish(int(msg.replica_id))

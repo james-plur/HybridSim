@@ -24,10 +24,14 @@ from hybridsim_infer import (
     KvWorkloadConfig,
     ModelSpec,
     OutputConfig,
+    ParallelConfig,
     ReplicaScheduleConfig,
     RequestProfileOutput,
     ScheduleConfig,
     build_inference_simulation,
+)
+from hybridsim_infer.workload_generators.model_config_resolve import (
+    resolve_op_level_config,
 )
 
 
@@ -229,6 +233,86 @@ class TestRequestProfilePdKv(unittest.TestCase):
             self.assertIn("handoff", kinds)
             kv_pulls = _events_by_name(profile, "KvPull")
             self.assertGreaterEqual(len(kv_pulls), 1)
+            self.assertGreaterEqual(len(_events_by_name(profile, "Handoff")), 1)
+            self.assertGreaterEqual(len(_events_by_name(profile, "RequestFinish")), 1)
+            proc_names = {
+                e["args"]["name"]
+                for e in profile["traceEvents"]
+                if e.get("name") == "process_name"
+            }
+            self.assertTrue(any("Prefill" in n for n in proc_names))
+            self.assertTrue(any("Decode" in n for n in proc_names))
+
+
+class TestRequestProfileOpLevel(unittest.TestCase):
+    def test_kernel_streams_and_critical_path_duration(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "op.json"
+            op_level = resolve_op_level_config(model_preset="llama-3.1-8b")
+            assert op_level is not None
+            op_level.model.num_layers = 2
+            op_level.parallel = ParallelConfig(tp_size=2)
+            cfg = InferenceConfig(
+                cluster=ClusterConfig(num_replicas=1),
+                schedule=ScheduleConfig(
+                    replica=ReplicaScheduleConfig(
+                        tokens_per_step=8,
+                        decode_tokens_per_step=1,
+                        max_num_scheduled_tokens=64,
+                    ),
+                ),
+                infer_workload=InferWorkloadConfig(mode="op_level", op=op_level),
+                output=OutputConfig(
+                    request_profile=RequestProfileOutput(enabled=True, path=out),
+                ),
+            )
+            infra = build_inference_simulation(cfg)
+            infra.schedule_arrivals(
+                [
+                    InferenceRequest(
+                        request_id=1,
+                        arrived_at=0.0,
+                        num_prefill_tokens=8,
+                        num_decode_tokens=2,
+                    )
+                ]
+            )
+            infra.run()
+            infra.check_errors()
+            profile = _load_profile(out)
+            engines = _events_by_name(profile, "EngineReq")
+            self.assertGreaterEqual(len(engines), 1)
+            for eng in engines:
+                args = eng["args"]
+                self.assertIn("phase", args)
+                self.assertIn("n_kernels", args)
+                self.assertIn("critical_path_s", args)
+                self.assertGreater(int(args["n_kernels"]), 1)
+                self.assertAlmostEqual(
+                    float(eng["dur"]) / 1e6,
+                    float(args["critical_path_s"]),
+                    places=6,
+                )
+                self.assertGreater(float(eng["dur"]), 0.0)
+
+            thread_names = {
+                e["args"]["name"]
+                for e in profile["traceEvents"]
+                if e.get("name") == "thread_name"
+            }
+            self.assertTrue(any(n.startswith("compute_") for n in thread_names))
+            self.assertTrue(any(n.startswith("comm_") for n in thread_names))
+            kernel_events = [
+                e
+                for e in profile["traceEvents"]
+                if e.get("ph") == "X" and e.get("cat") == "op_kernel"
+            ]
+            self.assertGreater(len(kernel_events), 0)
+            self.assertTrue(any("gemm" in str(e.get("name", "")).lower() or "attn" in str(e.get("name", "")).lower() for e in kernel_events))
+            kernel_deps = [
+                e for e in profile["traceEvents"] if e.get("name") == "KernelDep"
+            ]
+            self.assertGreater(len(kernel_deps), 0)
 
 
 class TestCreateSessionDisabled(unittest.TestCase):

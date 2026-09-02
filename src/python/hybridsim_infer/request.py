@@ -75,7 +75,7 @@ class InferenceRequest:
         return self.num_computed_tokens >= self.num_tokens_with_output
 
     def record_prefix_hit(self, n: int) -> None:
-        """Keep the longest prefix-cache hit observed for this request."""
+        """Keep the longest Prefill APC / Store hit (not PD Decode KV pull)."""
         hit = max(0, int(n))
         if hit > self.prefix_hit_tokens:
             self.prefix_hit_tokens = hit

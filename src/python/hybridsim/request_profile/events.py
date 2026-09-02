@@ -9,6 +9,7 @@ MSG_COMPLETE = "complete"
 MSG_INSTANT = "instant"
 MSG_FLOW = "flow"
 MSG_REQUEST_META = "request_meta"
+MSG_PROFILE_META = "profile_meta"
 MSG_STOP = "stop"
 
 # Fixed Chrome Trace pids / tids
@@ -18,6 +19,8 @@ TID_CLUSTER_DISPATCH = 1
 
 TID_REPLICA_ENGINE = 0
 TID_REPLICA_SCHEDULE = 1
+#: First dynamic compute/comm stream track on a replica process.
+TID_REPLICA_STREAM_BASE = 2
 
 
 def us(seconds: float) -> float:

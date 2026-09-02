@@ -103,11 +103,13 @@ class AnalyticAnalyzer:
                 if dep_op not in seen:
                     seen.add(dep_op)
                     deps.append(dep_op)
+            kind = plan.kind.value if hasattr(plan.kind, "value") else str(plan.kind)
             kernels.append(
                 {
                     "name": plan.name,
                     "duration": float(self.estimate_kernel_duration(plan)),
                     "dependencies": deps,
+                    "kind": kind,
                 }
             )
         return {

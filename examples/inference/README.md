@@ -4,7 +4,7 @@ Native Actor-based inference on hybridsim. Corresponds to
 `hybridsimdesign/基于actor系统的推理仿真设计.md` and
 `hybridsimdesign/hybridsim inference offline校准.md` (**NO_NETWORK**).
 
-架构总览（各层职责、数据流、现状边界）：**[`docs/architecture.md`](../../docs/architecture.md)**；配置：**[`docs/inference_config.md`](../../docs/inference_config.md)**；输出：**[`docs/outputs.md`](../../docs/outputs.md)**；文档索引：[`docs/README.md`](../../docs/README.md)。本文只讲怎么跑。
+架构总览（各层职责、数据流、现状边界）：**[`docs/architecture.md`](../../docs/architecture.md)**；配置：**[`docs/inference_config.md`](../../docs/inference_config.md)**；输出：**[`docs/outputs.md`](../../docs/outputs.md)**；平台基座：**[`docs/platform.md`](../../docs/platform.md)**。仓库总览见根目录 [`README.md`](../../README.md)。
 
 ## 分层与代码
 
@@ -32,21 +32,31 @@ Native Actor-based inference on hybridsim. Corresponds to
 
 | Process | Tracks |
 |---------|--------|
-| `Cluster` | `schedule`（`ClusterSchedule`，dur≈0）、`dispatch`（`Dispatch` → replica） |
-| `Replica_N` | `engine`（`EngineReq` / `KvPull` / `KvPush`）、`schedule`（`ReplicaEnqueue` / `ReplicaSchedule`） |
+| `Cluster` | `schedule`（`ClusterSchedule` / `RequestFinish`）、`dispatch`（`Dispatch` / `Handoff`） |
+| `Replica_N (Prefill\|Decode)` | `engine`（`EngineReq` / `KvPull` / `KvPush`）、`schedule`（`ReplicaEnqueue` / `ReplicaSchedule`） |
+| 同上（`infer_workload.mode=op_level`） | `compute_*` / `comm_*`：按依赖最早开工的 kernel slice；跨 stream 依赖为 `KernelDep` flow |
 
-Flow 箭头（Chrome Trace `ph=s/f`）：`ClusterToReplica`（Dispatch → ReplicaEnqueue）、`ScheduleToEngine`（ReplicaSchedule → EngineReq）。
+Flow 箭头（Chrome Trace `ph=s/f`）：`ClusterToReplica`（Dispatch → ReplicaEnqueue）、`ScheduleToEngine`（ReplicaSchedule → EngineReq）、`KernelDep`（跨 compute/comm stream 的算子依赖）。
 
-请求元信息写在 `metadata.requests[<request_id>]`（arrived_at、prefill/decode token、prompt_len/prefix、kv_transfer_params、完成态等）；Dispatch / Enqueue / EngineReq 的 `args` 也带精简字段，方便 UI 悬停查看。
+请求元信息写在 `metadata.requests[<request_id>]`（arrived_at、prefill/decode token、prompt_len/prefix、kv_transfer_params、完成态等）；`metadata` 还可含 demo 写入的 `input` / `workload` / `tp` / `n_requests`。Dispatch / Enqueue / EngineReq 的 `args` 带 `phase`、`scheduled_tokens`、`n_kernels`、`critical_path_s` 等，方便 UI 悬停查看。
 
-打开方式：Chrome `chrome://tracing` 或 [Perfetto UI](https://ui.perfetto.dev/) 加载 JSON。
+打开方式：Chrome `chrome://tracing` 或 [Perfetto UI](https://ui.perfetto.dev/) 加载 JSON。看算子依赖线时优先 `chrome://tracing`，选中 slice 后显示 flow。
 
 ```bash
 PYTHONPATH=src/python:. python examples/inference/pd_multipool_profile_demo.py
-# → profile/pd_multipool_profile_demo.json
+# → profile/pd_multipool_profile_demo.json  （handwritten + batch_level）
+
+PYTHONPATH=src/python:. python examples/inference/pd_multipool_profile_demo.py --input trace
+# 真实 KV trace 前 10 条（默认 mooncake_fast25）
+
+PYTHONPATH=src/python:. python examples/inference/pd_multipool_profile_demo.py --workload op
+# llama-3.1-8b 全层 + TP=2；profile 含 compute/comm stream
+
+PYTHONPATH=src/python:. python examples/inference/pd_multipool_profile_demo.py \
+  --input trace --workload op --max-requests 10
 ```
 
-CLI：`--enable_request_profile` / `--request_profile_path` / `--request_profile_dir`。
+CLI：`--input handwritten|trace`、`--workload batch|op`、`--trace`、`--max-requests`、`--max-decode`、`--tp`、`--profile-path`、`--write-metrics`。脚本默认打印 `metrics()`。
 
 ## Topology（`cluster.type`）
 
@@ -98,7 +108,8 @@ PYTHONPATH=src/python:. python examples/inference/monolithic_demo.py
 # PD disagg (P→D handoff + control-plane RTT + RDMA sim) with local prefix cache
 PYTHONPATH=src/python:. python examples/inference/pd_disagg_prefix_demo.py
 
-# 2P+2D + KV + prefix cache — best for visualizing the request profile Gantt
+# 2P+2D + KV + prefix cache — request profile Gantt
+#   --input trace --workload op  见上文 Request profile CLI
 PYTHONPATH=src/python:. python examples/inference/pd_multipool_profile_demo.py
 
 # ServeGen RequestGenerator (optional: install ServeGen first)

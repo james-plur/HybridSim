@@ -73,6 +73,7 @@ def main() -> None:
     infra.run()
     infra.check_errors()
 
+    print(infra.metrics())
     finished = infra.finished_requests
     print(
         f"arrived={infra.cluster.arrived_count} finished={len(finished)} now={infra.now:.4f}"

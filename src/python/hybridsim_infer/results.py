@@ -16,7 +16,7 @@ def summarize_metrics(
     n_scheduled: int,
     sim_now: float,
 ) -> dict[str, Any]:
-    """Aggregate TTFT / TPS / prefix-hit rate from finished requests."""
+    """Aggregate TTFT / TPS / Prefill prefix-cache hit rate from finished requests."""
     if not finished:
         return {
             "mean_ttft_s": None,

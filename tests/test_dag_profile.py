@@ -20,10 +20,12 @@ from hybridsim_infer.workload_generators.configs import (
 )
 from hybridsim_infer.workload_generators.infer_workload_generator.op_level.analytic.dag_profile import (
     asap_schedule,
+    assign_kernel_streams,
     build_chrome_trace,
     make_demo_prefill_batch,
     profile_schedule_batch,
     rank_layout,
+    stream_track_names,
     summarize_overlap,
     write_chrome_trace,
 )
@@ -46,6 +48,44 @@ class TestDagProfile(unittest.TestCase):
         stats = summarize_overlap(sched)
         self.assertAlmostEqual(stats["critical_path_s"], 4.0)
         self.assertGreater(stats["overlap_ratio"], 0.0)
+
+    def test_assign_chain_stays_on_one_compute_stream(self) -> None:
+        kernels = [
+            {"name": "gemm_a", "duration": 1.0, "dependencies": [], "kind": "gemm"},
+            {"name": "gemm_b", "duration": 1.0, "dependencies": [0], "kind": "gemm"},
+            {"name": "gemm_c", "duration": 1.0, "dependencies": [1], "kind": "gemm"},
+        ]
+        ids = assign_kernel_streams(asap_schedule(kernels))
+        self.assertEqual(ids, [0, 0, 0])
+
+    def test_assign_fork_splits_independent_compute(self) -> None:
+        kernels = [
+            {"name": "gemm_a", "duration": 1.0, "dependencies": [], "kind": "gemm"},
+            {"name": "gemm_b", "duration": 2.0, "dependencies": [0], "kind": "gemm"},
+            {"name": "gemm_c", "duration": 1.0, "dependencies": [0], "kind": "gemm"},
+        ]
+        ids = assign_kernel_streams(asap_schedule(kernels))
+        self.assertEqual(ids[0], ids[1])
+        self.assertNotEqual(ids[1], ids[2])
+
+    def test_assign_comm_uses_comm_stream(self) -> None:
+        kernels = [
+            {"name": "gemm_a", "duration": 1.0, "dependencies": [], "kind": "gemm"},
+            {
+                "name": "attn_tp_allreduce",
+                "duration": 0.5,
+                "dependencies": [0],
+                "kind": "comm",
+            },
+            {"name": "gemm_b", "duration": 1.0, "dependencies": [1], "kind": "gemm"},
+        ]
+        scheduled = asap_schedule(kernels)
+        ids = assign_kernel_streams(scheduled)
+        names = stream_track_names(scheduled, ids)
+        self.assertTrue(names[ids[0]].startswith("compute_"))
+        self.assertTrue(names[ids[1]].startswith("comm_"))
+        self.assertTrue(names[ids[2]].startswith("compute_"))
+        self.assertEqual(ids[0], ids[2])
 
     def test_rank_layout_tp_pp(self) -> None:
         ranks = rank_layout(ParallelConfig(tp_size=2, pp_size=2))

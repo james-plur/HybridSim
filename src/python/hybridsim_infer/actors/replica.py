@@ -24,6 +24,16 @@ from hybridsim_infer.workload_generators import (
     InferWorkloadGenerator,
     make_infer_workload_generator,
 )
+from hybridsim_infer.workload_generators.infer_workload_generator.batch_features import (
+    extract_batch_features,
+)
+from hybridsim_infer.workload_generators.infer_workload_generator.op_level.analytic.analyzer import (
+    critical_path_duration_s,
+)
+from hybridsim_infer.workload_generators.infer_workload_generator.op_level.analytic.dag_profile import (
+    build_replica_kernel_slices,
+)
+from hybridsim.request_profile.events import TID_REPLICA_STREAM_BASE
 
 
 class ReplicaActor(ActorBase):
@@ -145,6 +155,20 @@ class ReplicaActor(ActorBase):
             )
 
         super().__init__(sim=sim, hs_actor=hs_actor, message_types=message_types)
+        if self._profile is not None:
+            setter = getattr(self._profile, "set_replica_process_name", None)
+            if setter is not None:
+                setter(self.replica_id, self._replica_profile_name())
+
+    def _replica_profile_name(self) -> str:
+        cluster = self._config.cluster
+        if cluster.resolved_cluster_type() == "pd":
+            prefill_ids, decode_ids = cluster.pd_pools()
+            if self.replica_id in prefill_ids:
+                return f"Replica_{self.replica_id} (Prefill)"
+            if self.replica_id in decode_ids:
+                return f"Replica_{self.replica_id} (Decode)"
+        return f"Replica_{self.replica_id}"
 
     def start(self) -> None:
         super().start()
@@ -330,9 +354,13 @@ class ReplicaActor(ActorBase):
             self._next_workload_id += 1
             workload = self._workload_generator(result.batch, workload_id=wid)
             engine_start = float(self.sim.now())
-            kernels = workload.get("kernels") or []
-            duration_s = float(kernels[0].get("duration", 0.0)) if kernels else 0.0
+            kernels = list(workload.get("kernels") or [])
+            duration_s = (
+                critical_path_duration_s(kernels) if kernels else 0.0
+            )
             if self._profile is not None:
+                feats = extract_batch_features(result.batch)
+                n_kernels = len(kernels)
                 for req in result.batch.requests:
                     self._profile.emit_engine_req(
                         start_s=engine_start,
@@ -342,7 +370,33 @@ class ReplicaActor(ActorBase):
                         workload_id=wid,
                         batch_id=int(result.batch.batch_id),
                         request=req,
+                        phase=str(feats.phase.value),
+                        scheduled_tokens=int(
+                            result.batch.tokens_per_request.get(req.request_id, 0)
+                        ),
+                        prefix_hit_tokens=int(req.prefix_hit_tokens),
+                        n_kernels=n_kernels,
+                        critical_path_s=duration_s,
+                        request_ids=batch_req_ids,
                     )
+                if n_kernels > 1:
+                    slices, flows = build_replica_kernel_slices(
+                        kernels,
+                        engine_start_s=engine_start,
+                        stream_tid_base=TID_REPLICA_STREAM_BASE,
+                        workload_id=wid,
+                        batch_id=int(result.batch.batch_id),
+                        request_ids=batch_req_ids,
+                    )
+                    emit_kernels = getattr(
+                        self._profile, "emit_engine_kernels", None
+                    )
+                    if emit_kernels is not None:
+                        emit_kernels(
+                            replica_id=self.replica_id,
+                            slices=slices,
+                            flows=flows,
+                        )
             self._worker.submit(workload, result.batch)
 
         # Only re-arm when nothing else will: cached-finish has no I/O; preempt
