@@ -29,14 +29,15 @@
 | `prefix_hit_tokens` | 各请求最长 APC/Store 前缀命中之和（同样不含 PD 传输） |
 
 ```python
-from hybridsim_infer import InferenceConfig, build_inference_simulation
+from hybridsim_infer import InferenceConfig, build_inference_simulation, format_metrics
 
 cfg = InferenceConfig()
 infra = build_inference_simulation(cfg)
 infra.schedule_arrivals(requests)
 infra.run()
 
-print(infra.metrics())
+print(infra.metrics())           # dict
+print(format_metrics(infra.metrics()))  # stdout 对齐文本
 for req in infra.finished_requests:
     print(req.request_id, req.finished_at)
 infra.check_errors()  # 聚合 Python / C++ Actor 异常
@@ -111,4 +112,4 @@ OutputConfig(
 
 `output.request_profile` 开启时，仿真在**子进程**收集 schedule / engine / KV 事件，写出 JSON。`run()` 结束后可通过 `infra.profile_path` 拿到文件路径。
 
-轨道与打开方式见 [examples/inference/README.md](../examples/inference/README.md) 的 Request profile 一节；嵌套字段说明见 [inference_config.md](inference_config.md) 的 `output.request_profile`。
+嵌套字段说明见 [inference_config.md](inference_config.md) 的 `output.request_profile`。完整 PD 示例见 [`examples/inference/pd_demo.py`](../examples/inference/pd_demo.py)。

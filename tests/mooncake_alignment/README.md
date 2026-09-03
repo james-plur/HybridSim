@@ -166,7 +166,7 @@ export PYTHONHASHSEED=0
 PYTHONHASHSEED=0 PYTHONPATH=src/python:tests:. python tests/test_mooncake_alignment.py -v
 PYTHONPATH=src/python:. python tests/test_inference_skeleton.py -v
 # PD + 本地 prefix demo
-PYTHONPATH=src/python:. python examples/inference/pd_disagg_prefix_demo.py
+PYTHONPATH=src/python:. python examples/inference/pd_demo.py
 ```
 
 无 `mooncake_master` / 真 RDMA 时**跳过真实侧**；hybridsim 自洽与语义断言始终执行。

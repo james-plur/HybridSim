@@ -1,27 +1,9 @@
 #!/usr/bin/env python3
-"""Multi Prefill + Multi Decode PD demo with KV transfer, prefix cache, and profile.
-
-Request input:
-  --input handwritten  (default)  six shared-prefix prompts
-  --input trace                   first N records of a KV cache JSONL (default 10)
-
-Workload:
-  --workload batch  (default)  token-proportional batch duration
-  --workload op                mock op DAG + Roofline; profile shows compute/comm streams
-
-Always prints ``metrics()``. Open the Chrome Trace JSON in chrome://tracing or Perfetto.
-
-Examples::
-
-    PYTHONPATH=src/python:. python examples/inference/pd_multipool_profile_demo.py
-    PYTHONPATH=src/python:. python examples/inference/pd_multipool_profile_demo.py \\
-        --input trace --workload op
-"""
+"""2 Prefill + 2 Decode PD demo: KV transfer, prefix cache, metrics, Chrome Trace."""
 
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 from typing import Optional
 
@@ -46,6 +28,7 @@ from hybridsim_infer import (
     RequestProfileOutput,
     ScheduleConfig,
     build_inference_simulation,
+    format_metrics,
 )
 from hybridsim_infer.request_generators import (
     KVCACHE_TRACES_DIR,
@@ -161,7 +144,26 @@ def _load_trace_requests(
 
 
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Request input:\n"
+            "  --input handwritten  (default) six shared-prefix prompts\n"
+            "  --input trace        first N records of a KV cache JSONL (default 10)\n"
+            "\n"
+            "Workload:\n"
+            "  --workload batch     (default) token-proportional batch duration\n"
+            "  --workload op        mock op DAG + Roofline; profile shows compute/comm streams\n"
+            "\n"
+            "Always prints metrics. Open the Chrome Trace JSON in chrome://tracing or Perfetto.\n"
+            "\n"
+            "Examples:\n"
+            "  PYTHONPATH=src/python:. python examples/inference/pd_demo.py\n"
+            "  PYTHONPATH=src/python:. python examples/inference/pd_demo.py "
+            "--input trace --workload op\n"
+        ),
+    )
     parser.add_argument(
         "--input",
         choices=("handwritten", "trace"),
@@ -190,7 +192,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         "--max-decode",
         type=int,
         default=-1,
-                        help="cap decode tokens; -1 = auto (16 for op-level, unlimited for batch); 0 = unlimited",
+        help="cap decode tokens; -1 = auto (16 for op-level, unlimited for batch); 0 = unlimited",
     )
     parser.add_argument(
         "--tp",
@@ -232,8 +234,8 @@ def _profile_path(args: argparse.Namespace) -> Path:
     if args.profile_path is not None:
         return Path(args.profile_path)
     if args.input == "handwritten" and args.workload == "batch":
-        return default_profile_dir() / "pd_multipool_profile_demo.json"
-    return default_profile_dir() / f"pd_multipool_profile_demo_{args.input}_{args.workload}.json"
+        return default_profile_dir() / "pd_demo.json"
+    return default_profile_dir() / f"pd_demo_{args.input}_{args.workload}.json"
 
 
 def build_config(args: argparse.Namespace) -> InferenceConfig:
@@ -350,24 +352,18 @@ def main(argv: Optional[list[str]] = None) -> None:
             }
         )
 
-    print("=== PD multipool profile demo (2P+2D, KV, prefix) ===")
+    print("=== PD demo (2P+2D, KV, prefix) ===")
     print(
-        f"input={args.input} workload={args.workload} "
-        f"replicas={len(infra.replicas)} n_requests={len(requests)} "
-        f"profile={cfg.output.request_profile.path}"
+        f"input={args.input}  workload={args.workload}  "
+        f"replicas={len(infra.replicas)}  n_requests={len(requests)}"
     )
     infra.schedule_arrivals(requests)
     infra.run()
     infra.check_errors()
 
-    print("metrics:")
-    print(json.dumps(infra.metrics(), indent=2, sort_keys=True))
+    print(format_metrics(infra.metrics()))
 
     finished = sorted(infra.finished_requests, key=lambda r: r.request_id)
-    print(
-        f"arrived={infra.cluster.arrived_count} finished={len(finished)} "
-        f"now={infra.now:.4f}s"
-    )
     for req in finished:
         params = req.kv_transfer_params or {}
         print(

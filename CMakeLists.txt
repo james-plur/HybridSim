@@ -45,7 +45,7 @@ target_link_libraries(engine_actor_tests PRIVATE hybridsim)
 hybridsim_target_options(engine_actor_tests)
 
 if(HYBRIDSIM_BUILD_EXAMPLES)
-  add_executable(actor_ping_pong examples/actor_ping_pong.cpp)
+  add_executable(actor_ping_pong examples/actors/actor_ping_pong.cpp)
   target_link_libraries(actor_ping_pong PRIVATE hybridsim)
   hybridsim_target_options(actor_ping_pong)
 endif()

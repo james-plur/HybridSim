@@ -1,6 +1,7 @@
 """Native Actor-based inference simulation (NO_NETWORK skeleton)."""
 
 from hybridsim_infer.builder import InferenceSimulation, build_inference_simulation
+from hybridsim_infer.results import format_metrics
 from hybridsim_infer.config import (
     ArtifactOutput,
     BatchFixedConfig,
@@ -58,6 +59,7 @@ __all__ = [
     "DeviceConfig",
     "EngineConfig",
     "FixedDurationPredictor",
+    "format_metrics",
     "InferWorkloadConfig",
     "InferenceConfig",
     "InferenceScheduler",

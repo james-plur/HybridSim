@@ -139,4 +139,4 @@ C++ 侧可直接继承 `hybridsim::actor` 或 `engine_actor`（[`engine_actor.hp
 | [`src/hybridsim/priority_store.hpp`](../src/hybridsim/priority_store.hpp) | 优先级 mailbox |
 | [`src/python/hybridsim/actor_base.py`](../src/python/hybridsim/actor_base.py) | Python `ActorBase` / `@on` |
 | [`src/python/hybridsim/simulation.py`](../src/python/hybridsim/simulation.py) | `Simulation` 生命周期 |
-| [`examples/actor_python_demo.py`](../examples/actor_python_demo.py) | 最小 Python Actor 示例 |
+| [`examples/actors/actor_python_demo.py`](../examples/actors/actor_python_demo.py) | 最小 Python Actor 示例 |

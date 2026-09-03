@@ -245,4 +245,4 @@ InferenceConfig(
 )
 ```
 
-完整示例见 [examples/inference/README.md](../examples/inference/README.md)。
+完整示例见 [`examples/inference/pd_demo.py`](../examples/inference/pd_demo.py)。

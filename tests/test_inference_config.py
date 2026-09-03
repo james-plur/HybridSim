@@ -14,6 +14,7 @@ from hybridsim_infer import (
     InferenceRequest,
     OutputConfig,
     build_inference_simulation,
+    format_metrics,
 )
 
 
@@ -77,6 +78,44 @@ class TestInferenceOutputs(unittest.TestCase):
             self.assertEqual(snap["cluster"]["type"], "monolith")
             self.assertIn("op", snap["infer_workload"])
             self.assertIn("model", snap["infer_workload"]["op"])
+
+
+class TestFormatMetrics(unittest.TestCase):
+    def test_aligned_human_readable_block(self) -> None:
+        text = format_metrics(
+            {
+                "hit_rate": 0.1467208864386889,
+                "mean_ttft_s": 15.494274247807946,
+                "n_finished": 10,
+                "n_scheduled": 10,
+                "prefill_tokens": 73282,
+                "prefix_hit_tokens": 10752,
+                "sim_now_s": 34.14999967296004,
+                "tps": 2145.885818500451,
+            }
+        )
+        self.assertIn("10 finished / 10 scheduled", text)
+        self.assertIn("34.150 s", text)
+        self.assertIn("15.494 s", text)
+        self.assertIn("2,145.9 tok/s", text)
+        self.assertIn("14.67%", text)
+        self.assertIn("10,752 / 73,282", text)
+
+    def test_empty_run(self) -> None:
+        text = format_metrics(
+            {
+                "mean_ttft_s": None,
+                "tps": 0.0,
+                "hit_rate": 0.0,
+                "n_finished": 0,
+                "n_scheduled": 0,
+                "sim_now_s": 0.0,
+                "prefill_tokens": 0,
+                "prefix_hit_tokens": 0,
+            }
+        )
+        self.assertIn("n/a", text)
+        self.assertIn("0.00%", text)
 
 
 class TestInferWorkloadOp(unittest.TestCase):

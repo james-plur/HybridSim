@@ -18,6 +18,7 @@ from hybridsim_infer import (
     RequestProfileOutput,
     ScheduleConfig,
     build_inference_simulation,
+    format_metrics,
 )
 
 
@@ -73,7 +74,7 @@ def main() -> None:
     infra.run()
     infra.check_errors()
 
-    print(infra.metrics())
+    print(format_metrics(infra.metrics()))
     finished = infra.finished_requests
     print(
         f"arrived={infra.cluster.arrived_count} finished={len(finished)} now={infra.now:.4f}"

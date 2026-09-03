@@ -51,6 +51,31 @@ def summarize_metrics(
     }
 
 
+def format_metrics(metrics: dict[str, Any]) -> str:
+    """Human-readable ``metrics()`` block for stdout (JSON dump stays on disk)."""
+
+    def _seconds(value: Any) -> str:
+        if value is None:
+            return "n/a"
+        return f"{float(value):,.3f} s"
+
+    n_finished = int(metrics.get("n_finished") or 0)
+    n_scheduled = int(metrics.get("n_scheduled") or 0)
+    hit_rate = float(metrics.get("hit_rate") or 0.0)
+    hits = int(metrics.get("prefix_hit_tokens") or 0)
+    prefill = int(metrics.get("prefill_tokens") or 0)
+    tps = float(metrics.get("tps") or 0.0)
+    lines = [
+        "metrics",
+        f"  requests       {n_finished} finished / {n_scheduled} scheduled",
+        f"  sim_now        {_seconds(metrics.get('sim_now_s'))}",
+        f"  mean_ttft      {_seconds(metrics.get('mean_ttft_s'))}",
+        f"  prefill_tps    {tps:,.1f} tok/s",
+        f"  prefix_hit     {hit_rate * 100:.2f}%  ({hits:,} / {prefill:,})",
+    ]
+    return "\n".join(lines)+"\n"
+
+
 def request_record(req: InferenceRequest) -> dict[str, Any]:
     """Stable per-request row for ``requests.jsonl``."""
     status = getattr(req, "status", None)

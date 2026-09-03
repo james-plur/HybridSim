@@ -102,7 +102,7 @@ gen = ServeGenRequestGenerator(
 sim.schedule_from_generator(gen)
 ```
 
-可选依赖：`pip install -e <ServeGen克隆>` 或 `pip install -e ".[servegen]"`。示例：`examples/inference/servegen_demo.py`。
+可选依赖：`pip install -e <ServeGen克隆>` 或 `pip install -e ".[servegen]"`。用法见上节 `ServeGenRequestGenerator`。
 
 ServeGen 在本项目中 **只做请求到达/长度**，不做 GPU 时长；时长仍由 `InferWorkloadGenerator`（batch_level / op_level）决定。
 
